@@ -632,7 +632,7 @@ class DailyWifePlugin(Star):
                              and m.user_id not in group_data["used"]
                              and not self._is_in_cooling_period(user_id, m.user_id)
                              and m.user_id not in group_data.get("pairs", {})
-                             and not self._is_user_blocked_for_me(user_id, m.user_id)]  # 新增：检查用户手动屏蔽
+                             and not self._is_user_blocked_for_peer(user_id, m.user_id, group_id)]  # 新增：检查用户手动屏蔽
 
             target = None
             # 尝试选取一个未配对的成员
