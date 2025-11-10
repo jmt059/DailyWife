@@ -273,15 +273,22 @@ class DailyWifePlugin(Star):
         formatted_nickname = safe_nickname[:max_len] + "……" if len(safe_nickname) > max_len else safe_nickname
         return f"{formatted_nickname}({qq})"
 
-    # --------------- 新增：用户手动屏蔽功能 ---------------
-    def _is_user_blocked_for_me(self, user_id: str, target_id: str) -> bool:
-        """检查目标用户是否被当前用户手动屏蔽"""
-        # 检查全局屏蔽（包括QQ群管家）
-        if target_id in self.user_manual_blocked_peer.get("global", []):
+    def _is_user_blocked_for_requester(self, requester_id: str, target_id: str, group_id: str) -> bool:
+        """检查目标用户是否被请求者屏蔽（双向检查）"""
+        # 全局屏蔽检查
+        if target_id in self.user_manual_blocked_peer.get("global_blocked", []):
             return True
-        # 检查用户个人屏蔽列表
-        if user_id in self.user_manual_blocked_peer and target_id in self.user_manual_blocked_peer[user_id]:
+
+        # 用户个人屏蔽列表检查
+        user_blocked_list = self.user_manual_blocked_peer.get(group_id, {}).get(requester_id, [])
+        if target_id in user_blocked_list:
             return True
+
+        # 双向屏蔽检查：如果对方也屏蔽了你，那么也无法匹配
+        target_blocked_list = self.user_manual_blocked_peer.get(group_id, {}).get(target_id, [])
+        if requester_id in target_blocked_list:
+            return True
+
         return False
 
     @filter.command("屏蔽用户")
