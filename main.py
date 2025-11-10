@@ -1,17 +1,18 @@
-from astrbot.api.all import *
-import astrbot.api.event.filter as filter
-from astrbot.api.message_components import *
-from datetime import datetime, timedelta
-import random
-import json
-import aiohttp
 import asyncio
-import traceback
+import json
+import random
 import time
-import astrbot.api.message_components as Comp
+import traceback
+from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse
 from typing import Dict, List, Optional, Set, Tuple
+from urllib.parse import urlparse
+
+import aiohttp
+import astrbot.api.event.filter as filter
+import astrbot.api.message_components as Comp
+from astrbot.api.all import *
+from astrbot.api.message_components import *
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
@@ -23,10 +24,13 @@ COOLING_DATA_PATH = PLUGIN_DIR / "cooling_data.json"
 BLOCKED_USERS_PATH = PLUGIN_DIR / "blocked_users.json"
 BREAKUP_COUNT_PATH = PLUGIN_DIR / "breakup_counts.json"
 ADVANCED_ENABLED_PATH = PLUGIN_DIR / "advanced_enabled.json"
+USER_MANUAL_BLOCKED_PEER_PATH = PLUGIN_DIR / "user_manual_blocked_peer.json"  # 新增：用户手动屏蔽列表
+
 
 # --------------- 数据结构 ---------------
 class GroupMember:
     """群成员数据类"""
+
     def __init__(self, data: dict):
         self.user_id: str = str(data["user_id"])
         self.nickname: str = data["nickname"]
@@ -36,6 +40,7 @@ class GroupMember:
     def display_info(self) -> str:
         """带QQ号的显示信息"""
         return f"{self.card or self.nickname}({self.user_id})"
+
 
 # --------------- 插件主类 ---------------
 @register("DailyWife", "jmt059", "每日老婆插件", "v1.0.2", "https://github.com/jmt059/DailyWife")
@@ -51,6 +56,7 @@ class DailyWifePlugin(Star):
         self.cooling_data = self._load_cooling_data()
         self.blocked_users = self._load_blocked_users()
         self.advanced_enabled = self._load_data(ADVANCED_ENABLED_PATH, {})
+        self.user_manual_blocked_peer = self._load_user_manual_blocked_peer()  # 新增：加载用户手动屏蔽列表
         self._init_napcat_config()
         self._migrate_old_data()
         self._clean_invalid_cooling_records()
@@ -99,15 +105,15 @@ class DailyWifePlugin(Star):
             self.napcat_hosts = [host.strip() for host in hosts_str.split(",")]
             self.current_host_index = 0
             self.timeout = self.config.get("request_timeout") or 10
-            
+
             # 验证每个主机格式
             for host in self.napcat_hosts:
                 parsed = urlparse(f"http://{host}")
                 if not parsed.hostname or not parsed.port:
                     raise ValueError(f"无效的Napcat地址格式: {host}")
-                    
+
             print(f"✅ 已加载 {len(self.napcat_hosts)} 个Napcat主机: {self.napcat_hosts}")
-            
+
         except Exception as e:
             raise RuntimeError(f"Napcat配置错误：{e}")
 
@@ -115,7 +121,7 @@ class DailyWifePlugin(Star):
         """获取当前要使用的Napcat主机（轮询方式）"""
         if not hasattr(self, 'napcat_hosts') or not self.napcat_hosts:
             return "127.0.0.1:3000"  # 默认回退
-        
+
         host = self.napcat_hosts[self.current_host_index]
         # 轮询到下一个主机
         self.current_host_index = (self.current_host_index + 1) % len(self.napcat_hosts)
@@ -137,8 +143,8 @@ class DailyWifePlugin(Star):
             if COOLING_DATA_PATH.exists():
                 with open(COOLING_DATA_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return { k: {"users": v["users"], "expire_time": datetime.fromisoformat(v["expire_time"])}
-                             for k, v in data.items() }
+                    return {k: {"users": v["users"], "expire_time": datetime.fromisoformat(v["expire_time"])}
+                            for k, v in data.items()}
             return {}
         except Exception as e:
             print(f"冷静期数据加载失败: {traceback.format_exc()}")
@@ -153,6 +159,43 @@ class DailyWifePlugin(Star):
         except Exception as e:
             print(f"屏蔽列表加载失败: {traceback.format_exc()}")
             return set()
+
+    def _load_user_manual_blocked_peer(self) -> Dict[str, List[str]]:
+        """加载用户手动屏蔽列表"""
+        try:
+            if USER_MANUAL_BLOCKED_PEER_PATH.exists():
+                with open(USER_MANUAL_BLOCKED_PEER_PATH, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # 确保全局屏蔽QQ群管家
+                    if "2854196310" not in data.get("global", []):
+                        if "global" not in data:
+                            data["global"] = []
+                        data["global"].append("2854196310")
+                        self._save_user_manual_blocked_peer(data)
+                    return data
+            else:
+                # 如果文件不存在，创建并添加QQ群管家到全局屏蔽
+                data = {"global": ["2854196310"]}
+                self._save_user_manual_blocked_peer(data)
+                return data
+        except Exception as e:
+            print(f"用户手动屏蔽列表加载失败: {traceback.format_exc()}")
+            # 返回默认数据，包含QQ群管家
+            return {"global": ["2854196310"]}
+
+    def _save_user_manual_blocked_peer(self, data: Dict[str, List[str]] = None):
+        """保存用户手动屏蔽列表"""
+        try:
+            if data is None:
+                data = self.user_manual_blocked_peer
+            if not USER_MANUAL_BLOCKED_PEER_PATH.parent.exists():
+                USER_MANUAL_BLOCKED_PEER_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = USER_MANUAL_BLOCKED_PEER_PATH.with_suffix(".tmp")
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            temp_path.replace(USER_MANUAL_BLOCKED_PEER_PATH)
+        except Exception as e:
+            print(f"保存用户手动屏蔽列表失败: {traceback.format_exc()}")
 
     def _load_data(self, path: str, default=None):
         try:
@@ -180,8 +223,8 @@ class DailyWifePlugin(Star):
             raise
 
     def _save_cooling_data(self):
-        temp_data = { k: {"users": v["users"], "expire_time": v["expire_time"].isoformat()}
-                      for k, v in self.cooling_data.items() }
+        temp_data = {k: {"users": v["users"], "expire_time": v["expire_time"].isoformat()}
+                     for k, v in self.cooling_data.items()}
         self._save_data(COOLING_DATA_PATH, temp_data)
 
     def _save_blocked_users(self):
@@ -202,7 +245,7 @@ class DailyWifePlugin(Star):
             if BREAKUP_COUNT_PATH.exists():
                 with open(BREAKUP_COUNT_PATH, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    return { date: {k: int(v) for k, v in counts.items()} for date, counts in data.items() }
+                    return {date: {k: int(v) for k, v in counts.items()} for date, counts in data.items()}
             return {}
         except Exception as e:
             print(f"分手次数数据加载失败: {traceback.format_exc()}")
@@ -230,6 +273,119 @@ class DailyWifePlugin(Star):
         formatted_nickname = safe_nickname[:max_len] + "……" if len(safe_nickname) > max_len else safe_nickname
         return f"{formatted_nickname}({qq})"
 
+    # --------------- 新增：用户手动屏蔽功能 ---------------
+    def _is_user_blocked_for_me(self, user_id: str, target_id: str) -> bool:
+        """检查目标用户是否被当前用户手动屏蔽"""
+        # 检查全局屏蔽（包括QQ群管家）
+        if target_id in self.user_manual_blocked_peer.get("global", []):
+            return True
+        # 检查用户个人屏蔽列表
+        if user_id in self.user_manual_blocked_peer and target_id in self.user_manual_blocked_peer[user_id]:
+            return True
+        return False
+
+    @filter.command("屏蔽用户")
+    async def block_user_command(self, event: AstrMessageEvent):
+        """用户手动屏蔽其他用户"""
+        try:
+            user_id = event.get_sender_id()
+            parts = event.message_str.split()
+
+            # 获取被@的用户或直接输入的QQ号
+            target_qq = None
+            for seg in event.get_messages():
+                if isinstance(seg, Comp.At):
+                    target_qq = str(seg.qq)
+                    break
+
+            if not target_qq and len(parts) > 1 and parts[1].isdigit():
+                target_qq = parts[1]
+
+            if not target_qq:
+                yield event.plain_result("❌ 请@要屏蔽的用户或输入其QQ号")
+                return
+
+            if user_id == target_qq:
+                yield event.plain_result("❌ 不能屏蔽自己")
+                return
+
+            # 初始化用户屏蔽列表
+            if user_id not in self.user_manual_blocked_peer:
+                self.user_manual_blocked_peer[user_id] = []
+
+            # 检查是否已屏蔽
+            if target_qq in self.user_manual_blocked_peer[user_id]:
+                yield event.plain_result(f"ℹ️ 您已经屏蔽了用户 {target_qq}")
+                return
+
+            # 添加屏蔽
+            self.user_manual_blocked_peer[user_id].append(target_qq)
+            self._save_user_manual_blocked_peer()
+
+            yield event.plain_result(f"✅ 已屏蔽用户 {target_qq}，您将不会被随机匹配到TA")
+
+        except Exception as e:
+            print(f"屏蔽用户命令异常: {traceback.format_exc()}")
+            yield event.plain_result("❌ 屏蔽用户时发生异常")
+
+    @filter.command("取消屏蔽")
+    async def unblock_user_command(self, event: AstrMessageEvent):
+        """用户取消屏蔽其他用户"""
+        try:
+            user_id = event.get_sender_id()
+            parts = event.message_str.split()
+
+            # 获取被@的用户或直接输入的QQ号
+            target_qq = None
+            for seg in event.get_messages():
+                if isinstance(seg, Comp.At):
+                    target_qq = str(seg.qq)
+                    break
+
+            if not target_qq and len(parts) > 1 and parts[1].isdigit():
+                target_qq = parts[1]
+
+            if not target_qq:
+                yield event.plain_result("❌ 请@要取消屏蔽的用户或输入其QQ号")
+                return
+
+            # 检查是否在屏蔽列表中
+            if user_id not in self.user_manual_blocked_peer or target_qq not in self.user_manual_blocked_peer[user_id]:
+                yield event.plain_result(f"ℹ️ 您并未屏蔽用户 {target_qq}")
+                return
+
+            # 取消屏蔽
+            self.user_manual_blocked_peer[user_id].remove(target_qq)
+            # 如果用户屏蔽列表为空，删除该用户的键
+            if not self.user_manual_blocked_peer[user_id]:
+                del self.user_manual_blocked_peer[user_id]
+            self._save_user_manual_blocked_peer()
+
+            yield event.plain_result(f"✅ 已取消屏蔽用户 {target_qq}")
+
+        except Exception as e:
+            print(f"取消屏蔽命令异常: {traceback.format_exc()}")
+            yield event.plain_result("❌ 取消屏蔽时发生异常")
+
+    @filter.command("我的屏蔽列表")
+    async def my_block_list_command(self, event: AstrMessageEvent):
+        """查看用户的屏蔽列表"""
+        try:
+            user_id = event.get_sender_id()
+
+            if user_id not in self.user_manual_blocked_peer or not self.user_manual_blocked_peer[user_id]:
+                yield event.plain_result("📝 您的屏蔽列表为空")
+                return
+
+            blocked_users = self.user_manual_blocked_peer[user_id]
+            blocked_list = "\n".join([f"• {uid}" for uid in blocked_users])
+
+            yield event.plain_result(f"📋 您的屏蔽列表：\n{blocked_list}")
+
+        except Exception as e:
+            print(f"查看屏蔽列表命令异常: {traceback.format_exc()}")
+            yield event.plain_result("❌ 查看屏蔽列表时发生异常")
+
     # --------------- 命令处理器 ---------------
     @filter.command("重置")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -245,7 +401,8 @@ class DailyWifePlugin(Star):
                 "-c → 冷静期\n"
                 "-b → 屏蔽名单\n"
                 "-d → 分手记录\n"
-                "-e → 进阶功能（重置后当前群视为未开启进阶）"
+                "-e → 进阶功能（重置后当前群视为未开启进阶）\n"
+                "-u → 用户手动屏蔽列表"  # 新增选项
             )
             yield event.plain_result(help_text)
             return
@@ -257,12 +414,19 @@ class DailyWifePlugin(Star):
             self.breakup_counts = {}
             self.advanced_usage = {}
             self.advanced_enabled = {}
+            self.user_manual_blocked_peer = {"global": ["2854196310"]}  # 保留QQ群管家屏蔽
             self._save_all_data()
             yield event.plain_result("✅ 已重置所有数据")
         elif arg == "-e":
             group_id = str(event.message_obj.group_id)
             self.advanced_enabled.pop(group_id, None)
             yield event.plain_result("✅ 已重置本群进阶功能状态")
+        elif arg == "-u":  # 新增：重置用户手动屏蔽列表
+            # 保留全局屏蔽（QQ群管家）
+            global_blocked = self.user_manual_blocked_peer.get("global", [])
+            self.user_manual_blocked_peer = {"global": global_blocked}
+            self._save_user_manual_blocked_peer()
+            yield event.plain_result("✅ 已重置所有用户手动屏蔽列表（保留全局屏蔽）")
         elif arg.isdigit():
             group_id = str(arg)
             if group_id in self.pair_data:
@@ -296,7 +460,7 @@ class DailyWifePlugin(Star):
     def _reset_blocks(self):
         self.blocked_users = set()
         self._save_blocked_users()
-        self.cooling_data = { k: v for k, v in self.cooling_data.items() if not k.startswith("block_") }
+        self.cooling_data = {k: v for k, v in self.cooling_data.items() if not k.startswith("block_")}
         self._save_cooling_data()
 
     def _reset_breakups(self):
@@ -308,6 +472,7 @@ class DailyWifePlugin(Star):
         self._save_cooling_data()
         self._save_blocked_users()
         self._save_data(BREAKUP_COUNT_PATH, self.breakup_counts)
+        self._save_user_manual_blocked_peer()  # 新增：保存用户手动屏蔽列表
 
     @filter.command("屏蔽")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -341,15 +506,15 @@ class DailyWifePlugin(Star):
 
     # --------------- 核心功能 ---------------
     async def _get_members(self, group_id: str) -> Optional[List]:
-    # 简化版本 - 只尝试所有主机一次
+        # 简化版本 - 只尝试所有主机一次
         for host in self.napcat_hosts:
             try:
                 print(f"🔍 尝试从 {host} 获取群成员...")
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        f"http://{host}/get_group_member_list",
-                        json={"group_id": group_id},
-                        timeout=self.timeout
+                            f"http://{host}/get_group_member_list",
+                            json={"group_id": group_id},
+                            timeout=self.timeout
                     ) as resp:
                         data = await resp.json()
                         if "data" in data and isinstance(data["data"], list):
@@ -363,7 +528,7 @@ class DailyWifePlugin(Star):
                             print(f"❌ {host} 返回数据结构异常")
             except Exception as e:
                 print(f"❌ 连接 {host} 失败: {e}")
-    
+
         print("💥 所有主机连接失败")
         return None
 
@@ -387,7 +552,7 @@ class DailyWifePlugin(Star):
         return self.advanced_enabled.get(group_id, False)
 
     # --------------- 用户功能 ---------------
-    @filter.regex(r"^今日老婆$") # 或者 filter.command("今日老婆") 取决于你的选择
+    @filter.regex(r"^今日老婆$")  # 或者 filter.command("今日老婆") 取决于你的选择
     async def daily_wife_command(self, event: AstrMessageEvent):
         if not hasattr(event.message_obj, "group_id"):
             yield event.plain_result("此命令仅限群聊中使用。")
@@ -397,53 +562,55 @@ class DailyWifePlugin(Star):
             user_id = event.get_sender_id()
             bot_id = event.message_obj.self_id
             self._check_reset(group_id)
-            group_data = self.pair_data.get(group_id, {"date": datetime.now().strftime("%Y-%m-%d"), "pairs": {}, "used": []})
+            group_data = self.pair_data.get(group_id,
+                                            {"date": datetime.now().strftime("%Y-%m-%d"), "pairs": {}, "used": []})
 
             # Check if the user is already in a pairing
             if user_id in group_data.get("pairs", {}):
                 try:
-                        group_id = str(event.message_obj.group_id)
-                        user_id = event.get_sender_id()
-                        self._check_reset(group_id)
-                        group_data = self.pair_data.get(group_id, {})
-                        partner_info = group_data["pairs"][user_id]
-                        formatted_info = self._format_display_info(partner_info['display_name'])
+                    group_id = str(event.message_obj.group_id)
+                    user_id = event.get_sender_id()
+                    self._check_reset(group_id)
+                    group_data = self.pair_data.get(group_id, {})
+                    partner_info = group_data["pairs"][user_id]
+                    formatted_info = self._format_display_info(partner_info['display_name'])
 
-                        message_elements = [Plain(f"💖 您的今日伴侣：{formatted_info}\n(请好好对待TA)")]
+                    message_elements = [Plain(f"💖 您的今日伴侣：{formatted_info}\n(请好好对待TA)")]
 
-                        # 检查是否开启了显示头像
-                        if self.config.get("show_avatar", True): # 从配置中获取 show_avatar 状态，默认为 True
-                            partner_id = partner_info['user_id']
-                            avatar_size = self.config.get("avatar_size", 100) # 从配置中获取头像尺寸，默认为 100
-                            avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
+                    # 检查是否开启了显示头像
+                    if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
+                        partner_id = partner_info['user_id']
+                        avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
+                        avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
 
-                            image_to_send = None
-                            try:
-                                async with aiohttp.ClientSession() as session:
-                                    async with session.get(avatar_url, timeout=10) as resp:
-                                        # 检查响应状态码和 Content-Type，确保是图片
-                                        if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                            image_data = await resp.read()
-                                            # 使用图片数据创建 Image 消息段
-                                            # 这里的 Image.fromBytes 需要根据你的 Astral 库具体实现来调整
-                                            # 如果没有 fromBytes 方法，可能需要使用 Image(raw=image_data) 或其他方式
-                                            image_to_send = Image.fromBytes(image_data)
-                                        else:
-                                            print(f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                            except aiohttp.ClientError as e:
-                                print(f"下载头像网络错误: {e}")
-                            except asyncio.TimeoutError:
-                                print("下载头像超时")
-                            except Exception as e:
-                                print(f"处理下载头像异常: {traceback.format_exc()}")
+                        image_to_send = None
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                async with session.get(avatar_url, timeout=10) as resp:
+                                    # 检查响应状态码和 Content-Type，确保是图片
+                                    if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
+                                        image_data = await resp.read()
+                                        # 使用图片数据创建 Image 消息段
+                                        # 这里的 Image.fromBytes 需要根据你的 Astral 库具体实现来调整
+                                        # 如果没有 fromBytes 方法，可能需要使用 Image(raw=image_data) 或其他方式
+                                        image_to_send = Image.fromBytes(image_data)
+                                    else:
+                                        print(
+                                            f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
+                        except aiohttp.ClientError as e:
+                            print(f"下载头像网络错误: {e}")
+                        except asyncio.TimeoutError:
+                            print("下载头像超时")
+                        except Exception as e:
+                            print(f"处理下载头像异常: {traceback.format_exc()}")
 
-                            if image_to_send:
-                                message_elements.append(image_to_send)
-                            else:
-                                message_elements.append(Plain("\n[头像获取失败]"))
+                        if image_to_send:
+                            message_elements.append(image_to_send)
+                        else:
+                            message_elements.append(Plain("\n[头像获取失败]"))
 
-                        yield event.chain_result(message_elements)
-                        return
+                    yield event.chain_result(message_elements)
+                    return
                 except Exception as e:
                     print(f"获取老婆发生异常: {traceback.format_exc()}")
                     yield event.plain_result("❌ 获取老婆发生异常")
@@ -452,23 +619,25 @@ class DailyWifePlugin(Star):
             if not members:
                 yield event.plain_result("⚠️ 当前群组状态异常，请联系管理员")
                 return
+
+            # 修改：添加用户手动屏蔽检查
             valid_members = [m for m in members if m.user_id not in {user_id, bot_id}
-                                            and m.user_id not in group_data["used"]
-                                            and not self._is_in_cooling_period(user_id, m.user_id)
-                                            and m.user_id not in group_data.get("pairs", {}) ] # 新增：确保被抽取的对象没有伴侣
+                             and m.user_id not in group_data["used"]
+                             and not self._is_in_cooling_period(user_id, m.user_id)
+                             and m.user_id not in group_data.get("pairs", {})
+                             and not self._is_user_blocked_for_me(user_id, m.user_id)]  # 新增：检查用户手动屏蔽
 
             target = None
             # 尝试选取一个未配对的成员
-            for _ in range(len(valid_members)): # 尝试次数等于剩余有效成员数
-                 if not valid_members:
-                     break
-                 chosen_member = random.choice(valid_members)
-                 if chosen_member.user_id not in group_data.get("pairs", {}):
-                     target = chosen_member
-                     break
-                 else:
-                     valid_members.remove(chosen_member)
-
+            for _ in range(len(valid_members)):  # 尝试次数等于剩余有效成员数
+                if not valid_members:
+                    break
+                chosen_member = random.choice(valid_members)
+                if chosen_member.user_id not in group_data.get("pairs", {}):
+                    target = chosen_member
+                    break
+                else:
+                    valid_members.remove(chosen_member)
 
             if not target:
                 yield event.plain_result("😢 暂时找不到合适的人选")
@@ -493,19 +662,20 @@ class DailyWifePlugin(Star):
             ]
 
             # 检查是否开启了显示头像
-            if self.config.get("show_avatar", True): # 从配置中获取 show_avatar 状态，默认为 True
-                avatar_size = self.config.get("avatar_size", 100) # 从配置中获取头像尺寸，默认为 100
+            if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
+                avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
                 avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={target.user_id}&spec={avatar_size}"
                 message_elements.append(Plain("▻ 对方头像："))
                 image_to_send = None
                 try:
                     async with aiohttp.ClientSession() as session:
                         async with session.get(avatar_url, timeout=10) as resp:
-                             if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
+                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
                                 image_data = await resp.read()
-                                image_to_send = Image.fromBytes(image_data) # 同样这里假设有 fromBytes 方法
-                             else:
-                                print(f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
+                                image_to_send = Image.fromBytes(image_data)  # 同样这里假设有 fromBytes 方法
+                            else:
+                                print(
+                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                 except aiohttp.ClientError as e:
                     print(f"下载头像网络错误: {e}")
                 except asyncio.TimeoutError:
@@ -514,10 +684,9 @@ class DailyWifePlugin(Star):
                     print(f"处理下载头像异常: {traceback.format_exc()}")
 
                 if image_to_send:
-                     message_elements.append(image_to_send)
+                    message_elements.append(image_to_send)
                 else:
-                     message_elements.append(Plain("[头像获取失败]"))
-
+                    message_elements.append(Plain("[头像获取失败]"))
 
             message_elements.extend([
                 Plain("\n💎 好好对待TA哦，\n"),
@@ -529,7 +698,6 @@ class DailyWifePlugin(Star):
         except Exception as e:
             print(f"配对异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 配对过程发生严重异常，请联系开发者")
-
 
     @filter.regex(r"^查询老婆$")
     async def query_handler(self, event: AstrMessageEvent):
@@ -547,9 +715,9 @@ class DailyWifePlugin(Star):
             message_elements = [Plain(f"💖 您的今日伴侣：{formatted_info}\n(请好好对待TA)")]
 
             # 检查是否开启了显示头像
-            if self.config.get("show_avatar", True): # 从配置中获取 show_avatar 状态，默认为 True
+            if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
                 partner_id = partner_info['user_id']
-                avatar_size = self.config.get("avatar_size", 100) # 从配置中获取头像尺寸，默认为 100
+                avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
                 avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
 
                 image_to_send = None
@@ -564,7 +732,8 @@ class DailyWifePlugin(Star):
                                 # 如果没有 fromBytes 方法，可能需要使用 Image(raw=image_data) 或其他方式
                                 image_to_send = Image.fromBytes(image_data)
                             else:
-                                print(f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
+                                print(
+                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                 except aiohttp.ClientError as e:
                     print(f"下载头像网络错误: {e}")
                 except asyncio.TimeoutError:
@@ -573,9 +742,9 @@ class DailyWifePlugin(Star):
                     print(f"处理下载头像异常: {traceback.format_exc()}")
 
                 if image_to_send:
-                     message_elements.append(image_to_send)
+                    message_elements.append(image_to_send)
                 else:
-                     message_elements.append(Plain("\n[头像获取失败]"))
+                    message_elements.append(Plain("\n[头像获取失败]"))
 
             yield event.chain_result(message_elements)
 
@@ -603,13 +772,15 @@ class DailyWifePlugin(Star):
                 self.cooling_data[f"block_{user_id}"] = {"users": [user_id], "expire_time": expire_time}
                 self._save_blocked_users()
                 self._save_cooling_data()
-                yield event.chain_result([Plain(f"⚠️ 检测到异常操作：\n▸ 今日已分手 {current_count} 次\n▸ 功能已临时禁用 {block_hours} 小时")])
+                yield event.chain_result([Plain(
+                    f"⚠️ 检测到异常操作：\n▸ 今日已分手 {current_count} 次\n▸ 功能已临时禁用 {block_hours} 小时")])
                 return
 
             # 删除双方的配对记录
             if user_id in self.pair_data[group_id]["pairs"]:
                 del self.pair_data[group_id]["pairs"][user_id]
-            if partner_id in self.pair_data[group_id]["pairs"] and self.pair_data[group_id]["pairs"][partner_id]["user_id"] == user_id:
+            if partner_id in self.pair_data[group_id]["pairs"] and self.pair_data[group_id]["pairs"][partner_id][
+                "user_id"] == user_id:
                 del self.pair_data[group_id]["pairs"][partner_id]
 
             group_data = self.pair_data[group_id]
@@ -617,7 +788,8 @@ class DailyWifePlugin(Star):
             self._save_pair_data()
             cooling_key = f"{user_id}-{partner_id}"
             cooling_hours = self.config.get("default_cooling_hours", 48)
-            self.cooling_data[cooling_key] = {"users": [user_id, partner_id], "expire_time": datetime.now() + timedelta(hours=cooling_hours)}
+            self.cooling_data[cooling_key] = {"users": [user_id, partner_id],
+                                              "expire_time": datetime.now() + timedelta(hours=cooling_hours)}
             self._save_cooling_data()
             yield event.chain_result([Plain(f"💔 您已解除与伴侣的关系\n⏳ {cooling_hours}小时内无法再匹配到一起")])
             user_counts[user_id] = current_count + 1
@@ -668,7 +840,7 @@ class DailyWifePlugin(Star):
     async def wish_command(self, event: AiocqhttpMessageEvent, input_id: int | None = None):
         group_id = str(event.message_obj.group_id)
         user_id = str(event.get_sender_id())
-        if not self._is_advanced_enabled(group_id): 
+        if not self._is_advanced_enabled(group_id):
             yield event.plain_result("❌ 进阶功能未开启，该群无法使用许愿功能。")
             return
         parts = event.message_str.split()
@@ -690,6 +862,11 @@ class DailyWifePlugin(Star):
             yield event.plain_result("❌ 无法对自己使用许愿功能。")
             return
 
+        # 新增：检查目标是否在用户的屏蔽列表中
+        if self._is_user_blocked_for_me(user_id, target_qq):
+            yield event.plain_result("❌ 无法对您屏蔽的用户使用许愿功能。")
+            return
+
         self._init_advanced_usage(group_id, user_id)
         if self.advanced_usage[group_id][user_id]["wish"] >= self.config.get("max_daily_wishes", 1):
             yield event.plain_result("❌ 今日许愿次数已用完。")
@@ -703,20 +880,21 @@ class DailyWifePlugin(Star):
             yield event.plain_result("❌ 你已经有伴侣了……许愿将不可用")
             return
 
-    # 新增的判断：检查目标是否已经配对
+        # 新增的判断：检查目标是否已经配对
         if target_qq in group_data["pairs"]:
             target_info = group_data["pairs"].get(target_qq)
-            target_display_name = target_info.get("display_name", f"QQ号为 {target_qq} 的用户") if target_info else f"QQ号为 {target_qq} 的用户"
+            target_display_name = target_info.get("display_name",
+                                                  f"QQ号为 {target_qq} 的用户") if target_info else f"QQ号为 {target_qq} 的用户"
             yield event.plain_result(f"❌ 你许愿的对象已经有伴侣了哦，请改用强娶功能")
             return
 
-    # 多端口尝试
+        # 多端口尝试
         last_error = None
         for attempt in range(len(self.napcat_hosts)):
             current_host = self._get_current_napcat_host()
             try:
                 print(f"🔍 许愿功能使用主机: {current_host}")
-            
+
                 payload = {
                     "group_id": group_id,
                     "user_id": target_qq,
@@ -724,22 +902,24 @@ class DailyWifePlugin(Star):
                 }
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        f"http://{current_host}/get_group_member_info",
-                        json=payload, 
-                        timeout=self.timeout
+                            f"http://{current_host}/get_group_member_info",
+                            json=payload,
+                            timeout=self.timeout
                     ) as resp:
                         response_data = await resp.json()
-                    
+
                         if response_data.get("status") == "failed" and "不存在" in response_data.get("message", ""):
                             print(f"❌ {current_host} 报告用户不存在，尝试下一个主机")
                             last_error = f"{current_host}: {response_data.get('message')}"
                             continue
-                    
+
                         elif response_data.get("status") == "ok" and "data" in response_data:
                             target_nickname = response_data["data"].get("nickname", f"未知用户({target_qq})")
                             sender_nickname = event.get_sender_name()
-                            group_data["pairs"][user_id] = {"user_id": target_qq, "display_name": f"{target_nickname}({target_qq})"}
-                            group_data["pairs"][target_qq] = {"user_id": user_id, "display_name": f"{sender_nickname}({user_id})"}
+                            group_data["pairs"][user_id] = {"user_id": target_qq,
+                                                            "display_name": f"{target_nickname}({target_qq})"}
+                            group_data["pairs"][target_qq] = {"user_id": user_id,
+                                                              "display_name": f"{sender_nickname}({user_id})"}
                             if user_id not in group_data["used"]:
                                 group_data["used"].append(user_id)
                             if target_qq not in group_data["used"]:
@@ -748,8 +928,9 @@ class DailyWifePlugin(Star):
                             partner_info = group_data["pairs"][user_id]
                             formatted_info = self._format_display_info(partner_info['display_name'])
                             self.advanced_usage[group_id][user_id]["wish"] += 1
-                            message_elements = [Plain(f"💖 许愿成功,系统已为您指定：{formatted_info}作为伴侣\n(请好好对待TA)")]
-                        
+                            message_elements = [
+                                Plain(f"💖 许愿成功,系统已为您指定：{formatted_info}作为伴侣\n(请好好对待TA)")]
+
                             # 检查是否开启了显示头像
                             if self.config.get("show_avatar", True):
                                 partner_id = partner_info['user_id']
@@ -764,7 +945,8 @@ class DailyWifePlugin(Star):
                                                 image_data = await resp.read()
                                                 image_to_send = Image.fromBytes(image_data)
                                             else:
-                                                print(f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
+                                                print(
+                                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                                 except aiohttp.ClientError as e:
                                     print(f"下载头像网络错误: {e}")
                                 except asyncio.TimeoutError:
@@ -797,7 +979,7 @@ class DailyWifePlugin(Star):
                 last_error = f"{current_host}: {str(e)}"
                 continue
 
-    # 所有主机都尝试失败
+        # 所有主机都尝试失败
         yield event.plain_result(f"❌ 许愿失败：所有Napcat主机都无法找到该用户\n最后错误: {last_error}")
 
     @filter.command("强娶")
@@ -830,6 +1012,11 @@ class DailyWifePlugin(Star):
             yield event.plain_result("❌ 无法对自己使用强娶功能。")
             return
 
+        # 新增：检查目标是否在用户的屏蔽列表中
+        if self._is_user_blocked_for_me(user_id, target_qq):
+            yield event.plain_result("❌ 无法对您屏蔽的用户使用强娶功能。")
+            return
+
         self._init_advanced_usage(group_id, user_id)
         if self.advanced_usage[group_id][user_id]["rob"] >= self.config.get("max_daily_rob_attempts", 2):
             yield event.plain_result("❌ 今日强娶次数已用完。")
@@ -849,7 +1036,7 @@ class DailyWifePlugin(Star):
             current_host = self._get_current_napcat_host()
             try:
                 print(f"🔍 强娶功能使用主机: {current_host}")
-            
+
                 payload = {
                     "group_id": group_id,
                     "user_id": target_qq,
@@ -857,17 +1044,17 @@ class DailyWifePlugin(Star):
                 }
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        f"http://{current_host}/get_group_member_info",
-                        json=payload,
-                        timeout=self.timeout
+                            f"http://{current_host}/get_group_member_info",
+                            json=payload,
+                            timeout=self.timeout
                     ) as resp:
                         response_data = await resp.json()
-                    
+
                         if response_data.get("status") == "failed" and "不存在" in response_data.get("message", ""):
                             print(f"❌ {current_host} 报告用户不存在，尝试下一个主机")
                             last_error = f"{current_host}: {response_data.get('message')}"
                             continue
-                    
+
                         elif response_data.get("status") == "ok" and "data" in response_data:
                             target_nickname = response_data["data"].get("nickname", f"未知用户({target_qq})")
                             if target_qq not in group_data["pairs"]:
@@ -889,12 +1076,15 @@ class DailyWifePlugin(Star):
                                 original_partner_info = group_data["pairs"][target_qq]
                                 original_partner_name = self._format_display_info(original_partner_info['display_name'])
                                 del group_data["pairs"][target_qq]
-                                if original_partner_id in group_data["pairs"] and group_data["pairs"][original_partner_id]["user_id"] == target_qq:
+                                if original_partner_id in group_data["pairs"] and \
+                                        group_data["pairs"][original_partner_id]["user_id"] == target_qq:
                                     del group_data["pairs"][original_partner_id]
 
                             sender_nickname = event.get_sender_name()
-                            group_data["pairs"][user_id] = {"user_id": target_qq, "display_name": f"{target_nickname}({target_qq})"}
-                            group_data["pairs"][target_qq] = {"user_id": user_id, "display_name": f"{sender_nickname}({user_id})"}
+                            group_data["pairs"][user_id] = {"user_id": target_qq,
+                                                            "display_name": f"{target_nickname}({target_qq})"}
+                            group_data["pairs"][target_qq] = {"user_id": user_id,
+                                                              "display_name": f"{sender_nickname}({user_id})"}
                             if user_id not in group_data["used"]:
                                 group_data["used"].append(user_id)
                             if target_qq not in group_data["used"]:
@@ -903,10 +1093,11 @@ class DailyWifePlugin(Star):
                             self.advanced_usage[group_id][user_id]["rob"] += 1
                             partner_info = group_data["pairs"][user_id]
                             formatted_info = self._format_display_info(partner_info['display_name'])
-                        
+
                             # 修复：在这里定义 message_elements
-                            message_elements = [Plain(f"🐮 强娶成功,系统已为您牛走了：{original_partner_name}的{formatted_info}作为伴侣")]
-                        
+                            message_elements = [
+                                Plain(f"🐮 强娶成功,系统已为您牛走了：{original_partner_name}的{formatted_info}作为伴侣")]
+
                             # 检查是否开启了显示头像
                             if self.config.get("show_avatar", True):
                                 partner_id = partner_info['user_id']
@@ -921,7 +1112,8 @@ class DailyWifePlugin(Star):
                                                 image_data = await resp.read()
                                                 image_to_send = Image.fromBytes(image_data)
                                             else:
-                                                print(f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
+                                                print(
+                                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                                 except aiohttp.ClientError as e:
                                     print(f"下载头像网络错误: {e}")
                                 except asyncio.TimeoutError:
@@ -1006,7 +1198,7 @@ class DailyWifePlugin(Star):
     def _clean_invalid_cooling_records(self):
         try:
             now = datetime.now()
-            expired_keys = [ k for k, v in self.cooling_data.items() if v["expire_time"] < now ]
+            expired_keys = [k for k, v in self.cooling_data.items() if v["expire_time"] < now]
             for k in expired_keys:
                 del self.cooling_data[k]
             if expired_keys:
@@ -1031,16 +1223,20 @@ class DailyWifePlugin(Star):
             "今日老婆 - 随机配对CP\n"
             "查询老婆 - 查询当前CP\n"
             "我要分手 - 解除当前CP关系\n\n"
+            "🛡️ 个人屏蔽功能：\n"
+            "/屏蔽用户 [QQ号/@用户] - 屏蔽指定用户（不会被随机匹配到）\n"
+            "/取消屏蔽 [QQ号/@用户] - 取消屏蔽指定用户\n"
+            "/我的屏蔽列表 - 查看已屏蔽的用户列表\n\n"
         )
         # 当前配置显示
         config_menu = (
             f"当前配置：\n"
-            f"▸ 每日最大分手次数：{self.config.get('max_daily_breakups',3)}\n"
-            f"▸ 超限屏蔽时长：{self.config.get('breakup_block_hours',24)}小时\n"
-            f"▸ 解除关系后需间隔 {self.config.get('default_cooling_hours',48)} 小时才能再次匹配\n"
-            f"▸ 每日许愿次数：{self.config.get('max_daily_wishes',1)}\n"
-            f"▸ 每日强娶次数：{self.config.get('max_daily_rob_attempts',2)}\n"
-            f"▸ 每日锁定次数：{self.config.get('max_daily_lock',1)}"
+            f"▸ 每日最大分手次数：{self.config.get('max_daily_breakups', 3)}\n"
+            f"▸ 超限屏蔽时长：{self.config.get('breakup_block_hours', 24)}小时\n"
+            f"▸ 解除关系后需间隔 {self.config.get('default_cooling_hours', 48)} 小时才能再次匹配\n"
+            f"▸ 每日许愿次数：{self.config.get('max_daily_wishes', 1)}\n"
+            f"▸ 每日强娶次数：{self.config.get('max_daily_rob_attempts', 2)}\n"
+            f"▸ 每日锁定次数：{self.config.get('max_daily_lock', 1)}"
         )
         # 根据是否启用进阶功能构造菜单：
         if not adv_enabled:
@@ -1054,6 +1250,7 @@ class DailyWifePlugin(Star):
                     "/重置 -b → 屏蔽名单及相关冷静期\n"
                     "/重置 -d → 分手记录\n"
                     "/重置 -e → 进阶功能状态重置\n"
+                    "/重置 -u → 用户手动屏蔽列表\n"  # 新增
                     "/屏蔽 [QQ号] - 屏蔽指定用户\n"
                     "/冷静期 [小时] - 设置冷静期时长\n"
                     "/开启老婆插件进阶功能\n\n"
@@ -1078,6 +1275,7 @@ class DailyWifePlugin(Star):
                     "/重置 -b → 屏蔽名单及相关冷静期\n"
                     "/重置 -d → 分手记录\n"
                     "/重置 -e → 进阶功能状态重置\n"
+                    "/重置 -u → 用户手动屏蔽列表\n"  # 新增
                     "/屏蔽 [QQ号] - 屏蔽指定用户\n"
                     "/冷静期 [小时] - 设置冷静期时长\n"
                     "/关闭进阶老婆插件功能\n\n"
@@ -1101,7 +1299,8 @@ class DailyWifePlugin(Star):
                     del self.breakup_counts[yesterday]
                     self._save_data(BREAKUP_COUNT_PATH, self.breakup_counts)
                 now = datetime.now()
-                self.cooling_data = { k: v for k, v in self.cooling_data.items() if not (k.startswith("block_") and v["expire_time"] < now) }
+                self.cooling_data = {k: v for k, v in self.cooling_data.items() if
+                                     not (k.startswith("block_") and v["expire_time"] < now)}
                 self._save_cooling_data()
                 self._clean_invalid_cooling_records()
                 self.advanced_usage = {}
