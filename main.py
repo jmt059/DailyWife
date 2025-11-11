@@ -47,7 +47,7 @@ class GroupMember:
 
 
 # --------------- 插件主类 ---------------
-@register("DailyWife", "jmt059", "每日老婆插件", "v1.0.2-mod", "https://github.com/jmt059/DailyWife")
+@register("DailyWife", "jmt059", "每日老婆插件", "v1.0.3", "https://github.com/jmt059/DailyWife")
 class DailyWifePlugin(Star):
     # 用于跟踪等待确认开启进阶功能的用户和会话信息
     ADVANCED_ENABLE_STATES: Dict[str, Dict[str, any]] = {}
