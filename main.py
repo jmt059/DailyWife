@@ -47,7 +47,7 @@ class GroupMember:
 
 
 # --------------- 插件主类 ---------------
-@register("DailyWife", "jmt059", "每日老婆插件", "v1.0.3", "https://github.com/jmt059/DailyWife")
+@register("DailyWife", "jmt059", "每日老婆插件", "v1.0.4", "https://github.com/jmt059/DailyWife")
 class DailyWifePlugin(Star):
     # 用于跟踪等待确认开启进阶功能的用户和会话信息
     ADVANCED_ENABLE_STATES: Dict[str, Dict[str, any]] = {}
@@ -73,7 +73,7 @@ class DailyWifePlugin(Star):
         asyncio.create_task(self._check_advanced_enable_timeout())
 
         # 确保默认全球屏蔽 q群管家（不会写入每个用户的黑名单文件，而是在筛选时作为永远排除）
-        print(f"✅ 已启用全局永久排除 QQ：{GLOBAL_EXCLUDE_QQ}")
+        logger.info(f"✅ 已启用全局永久排除 QQ：{GLOBAL_EXCLUDE_QQ}")
 
     # --------------- 数据迁移 ---------------
     def _migrate_old_data(self):
@@ -109,7 +109,7 @@ class DailyWifePlugin(Star):
                     self.pair_data[group_id]["pairs"] = new_pairs
                     self._save_pair_data()
         except Exception as e:
-            print(f"数据迁移失败: {traceback.format_exc()}")
+            logger.error(f"数据迁移失败: {traceback.format_exc()}")
 
     # --------------- 初始化方法 ---------------
     def _init_napcat_config(self):
@@ -126,7 +126,7 @@ class DailyWifePlugin(Star):
                 if not parsed.hostname or not parsed.port:
                     raise ValueError(f"无效的Napcat地址格式: {host}")
 
-            print(f"✅ 已加载 {len(self.napcat_hosts)} 个Napcat主机: {self.napcat_hosts}")
+            logger.info(f"✅ 已加载 {len(self.napcat_hosts)} 个Napcat主机: {self.napcat_hosts}")
 
         except Exception as e:
             raise RuntimeError(f"Napcat配置错误：{e}")
@@ -149,7 +149,7 @@ class DailyWifePlugin(Star):
                     return json.load(f)
             return {}
         except Exception as e:
-            print(f"配对数据加载失败: {traceback.format_exc()}")
+            logger.error(f"配对数据加载失败: {traceback.format_exc()}")
             return {}
 
     def _load_cooling_data(self) -> Dict:
@@ -161,7 +161,7 @@ class DailyWifePlugin(Star):
                             for k, v in data.items()}
             return {}
         except Exception as e:
-            print(f"冷静期数据加载失败: {traceback.format_exc()}")
+            logger.error(f"冷静期数据加载失败: {traceback.format_exc()}")
             return {}
 
     def _load_manual_blacklist(self) -> Dict[str, List[Dict]]:
@@ -192,7 +192,7 @@ class DailyWifePlugin(Star):
                     return cleaned
             return {}
         except Exception as e:
-            print(f"手动黑名单加载失败: {traceback.format_exc()}")
+            logger.error(f"手动黑名单加载失败: {traceback.format_exc()}")
             return {}
 
     def _load_data(self, path: Path, default=None):
@@ -202,10 +202,10 @@ class DailyWifePlugin(Star):
         except FileNotFoundError:
             return default
         except json.JSONDecodeError:
-            print(f"JSON 文件 {path} 解码错误，已返回默认值。")
+            logger.error(f"JSON 文件 {path} 解码错误，已返回默认值。")
             return default
         except Exception as e:
-            print(f"加载数据文件 {path} 失败: {traceback.format_exc()}")
+            logger.error(f"加载数据文件 {path} 失败: {traceback.format_exc()}")
             return default
 
     def _save_pair_data(self):
@@ -217,7 +217,7 @@ class DailyWifePlugin(Star):
                 json.dump(self.pair_data, f, ensure_ascii=False, indent=2)
             temp_path.replace(PAIR_DATA_PATH)
         except Exception as e:
-            print(f"保存配对数据失败: {traceback.format_exc()}")
+            logger.error(f"保存配对数据失败: {traceback.format_exc()}")
             raise
 
     def _save_cooling_data(self):
@@ -233,7 +233,7 @@ class DailyWifePlugin(Star):
                 json.dump(self.manual_blacklist, f, ensure_ascii=False, indent=2)
             temp_path.replace(USER_MANUAL_BLOCKED_PATH)
         except Exception as e:
-            print(f"保存手动黑名单失败: {traceback.format_exc()}")
+            logger.error(f"保存手动黑名单失败: {traceback.format_exc()}")
 
     def _save_data(self, path: Path, data: dict):
         try:
@@ -243,7 +243,7 @@ class DailyWifePlugin(Star):
                 json.dump(data, f, ensure_ascii=False, indent=2)
             temp_path.replace(path)
         except Exception as e:
-            print(f"数据保存失败: {traceback.format_exc()}")
+            logger.error(f"数据保存失败: {traceback.format_exc()}")
 
     def _load_breakup_counts(self) -> Dict[str, Dict[str, int]]:
         try:
@@ -253,7 +253,7 @@ class DailyWifePlugin(Star):
                     return {date: {k: int(v) for k, v in counts.items()} for date, counts in data.items()}
             return {}
         except Exception as e:
-            print(f"分手次数数据加载失败: {traceback.format_exc()}")
+            logger.error(f"分手次数数据加载失败: {traceback.format_exc()}")
             return {}
 
     def _parse_display_info(self, raw_info: str) -> Tuple[str, str]:
@@ -268,7 +268,7 @@ class DailyWifePlugin(Star):
                 return parts[0].strip(), parts[-1].replace(')', '')
             return raw_info, "解析失败"
         except Exception as e:
-            print(f"解析display_info失败：{raw_info} | 错误：{str(e)}")
+            logger.error(f"解析display_info失败：{raw_info} | 错误：{str(e)}")
             return raw_info, "解析异常"
 
     def _format_display_info(self, raw_info: str) -> str:
@@ -525,10 +525,12 @@ class DailyWifePlugin(Star):
         # 简化版本 - 只尝试所有主机一次
         for host in self.napcat_hosts:
             try:
-                print(f"🔍 尝试从 {host} 获取群成员...")
+                logger.info(f"🔍 尝试从 {host} 获取群成员...")
+                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                             f"http://{host}/get_group_member_list",
+                            headers=headers,
                             json={"group_id": group_id},
                             timeout=self.timeout
                     ) as resp:
@@ -536,16 +538,16 @@ class DailyWifePlugin(Star):
                         if "data" in data and isinstance(data["data"], list):
                             members = [GroupMember(m) for m in data["data"] if "user_id" in m]
                             if len(members) > 0:
-                                print(f"✅ {host} 成功获取 {len(members)} 个成员")
+                                logger.info(f"✅ {host} 成功获取 {len(members)} 个成员")
                                 return members
                             else:
-                                print(f"⚠️ {host} 返回0个成员")
+                                logger.warning(f"⚠️ {host} 返回0个成员")
                         else:
-                            print(f"❌ {host} 返回数据结构异常")
+                            logger.error(f"❌ {host} 返回数据结构异常")
             except Exception as e:
-                print(f"❌ 连接 {host} 失败: {e}")
+                logger.error(f"❌ 连接 {host} 失败: {e}")
 
-        print("💥 所有主机连接失败")
+        logger.error("💥 所有主机连接失败")
         return None
 
     def _check_reset(self, group_id: str):
@@ -555,7 +557,7 @@ class DailyWifePlugin(Star):
                 self.pair_data[group_id] = {"date": today, "pairs": {}, "used": []}
                 self._save_pair_data()
         except Exception as e:
-            print(f"重置检查失败: {traceback.format_exc()}")
+            logger.error(f"重置检查失败: {traceback.format_exc()}")
 
     def _is_advanced_enabled(self, group_id: str) -> bool:
         """
@@ -609,14 +611,14 @@ class DailyWifePlugin(Star):
                                         # 使用图片数据创建 Image 消息段
                                         image_to_send = Image.fromBytes(image_data)
                                     else:
-                                        print(
+                                        logger.error(
                                             f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                         except aiohttp.ClientError as e:
-                            print(f"下载头像网络错误: {e}")
+                            logger.error(f"下载头像网络错误: {e}")
                         except asyncio.TimeoutError:
-                            print("下载头像超时")
+                            logger.error("下载头像超时")
                         except Exception as e:
-                            print(f"处理下载头像异常: {traceback.format_exc()}")
+                            logger.error(f"处理下载头像异常: {traceback.format_exc()}")
 
                         if image_to_send:
                             message_elements.append(image_to_send)
@@ -626,7 +628,7 @@ class DailyWifePlugin(Star):
                     yield event.chain_result(message_elements)
                     return
                 except Exception as e:
-                    print(f"获取老婆发生异常: {traceback.format_exc()}")
+                    logger.error(f"获取老婆发生异常: {traceback.format_exc()}")
                     yield event.plain_result("❌ 获取老婆发生异常")
 
             members = await self._get_members(int(group_id))
@@ -691,14 +693,14 @@ class DailyWifePlugin(Star):
                                 image_data = await resp.read()
                                 image_to_send = Image.fromBytes(image_data)
                             else:
-                                print(
+                                logger.error(
                                     f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                 except aiohttp.ClientError as e:
-                    print(f"下载头像网络错误: {e}")
+                    logger.error(f"下载头像网络错误: {e}")
                 except asyncio.TimeoutError:
-                    print("下载头像超时")
+                    logger.error("下载头像超时")
                 except Exception as e:
-                    print(f"处理下载头像异常: {traceback.format_exc()}")
+                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
 
                 if image_to_send:
                     message_elements.append(image_to_send)
@@ -713,7 +715,7 @@ class DailyWifePlugin(Star):
             yield event.chain_result(message_elements)
 
         except Exception as e:
-            print(f"配对异常: {traceback.format_exc()}")
+            logger.error(f"配对异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 配对过程发生严重异常，请联系开发者")
 
     @filter.regex(r"^查询老婆$")
@@ -747,14 +749,14 @@ class DailyWifePlugin(Star):
                                 # 使用图片数据创建 Image 消息段
                                 image_to_send = Image.fromBytes(image_data)
                             else:
-                                print(
+                                logger.error(
                                     f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                 except aiohttp.ClientError as e:
-                    print(f"下载头像网络错误: {e}")
+                    logger.error(f"下载头像网络错误: {e}")
                 except asyncio.TimeoutError:
-                    print("下载头像超时")
+                    logger.error("下载头像超时")
                 except Exception as e:
-                    print(f"处理下载头像异常: {traceback.format_exc()}")
+                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
 
                 if image_to_send:
                     message_elements.append(image_to_send)
@@ -764,7 +766,7 @@ class DailyWifePlugin(Star):
             yield event.chain_result(message_elements)
 
         except Exception as e:
-            print(f"查询异常: {traceback.format_exc()}")
+            logger.error(f"查询异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 查询过程发生异常")
 
     @filter.regex(r"^我要分手$")
@@ -810,7 +812,7 @@ class DailyWifePlugin(Star):
             self.breakup_counts[today] = user_counts
             self._save_data(BREAKUP_COUNT_PATH, self.breakup_counts)
         except Exception as e:
-            print(f"分手异常: {traceback.format_exc()}")
+            logger.error(f"分手异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 分手操作异常")
 
     # --------------- 进阶功能（进阶功能） ---------------
@@ -899,8 +901,8 @@ class DailyWifePlugin(Star):
         for attempt in range(len(self.napcat_hosts)):
             current_host = self._get_current_napcat_host()
             try:
-                print(f"🔍 许愿功能使用主机: {current_host}")
-
+                logger.info(f"🔍 许愿功能使用主机: {current_host}")
+                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
                 payload = {
                     "group_id": group_id,
                     "user_id": target_qq,
@@ -909,13 +911,14 @@ class DailyWifePlugin(Star):
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                             f"http://{current_host}/get_group_member_info",
+                            headers=headers,
                             json=payload,
                             timeout=self.timeout
                     ) as resp:
                         response_data = await resp.json()
 
                         if response_data.get("status") == "failed" and "不存在" in response_data.get("message", ""):
-                            print(f"❌ {current_host} 报告用户不存在，尝试下一个主机")
+                            logger.warning(f"⚠️ {current_host} 报告用户不存在，尝试下一个主机")
                             last_error = f"{current_host}: {response_data.get('message')}"
                             continue
 
@@ -951,14 +954,14 @@ class DailyWifePlugin(Star):
                                                 image_data = await resp.read()
                                                 image_to_send = Image.fromBytes(image_data)
                                             else:
-                                                print(
+                                                logger.error(
                                                     f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                                 except aiohttp.ClientError as e:
-                                    print(f"下载头像网络错误: {e}")
+                                    logger.error(f"下载头像网络错误: {e}")
                                 except asyncio.TimeoutError:
-                                    print("下载头像超时")
+                                    logger.error("下载头像超时")
                                 except Exception as e:
-                                    print(f"处理下载头像异常: {traceback.format_exc()}")
+                                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
 
                                 if image_to_send:
                                     message_elements.append(image_to_send)
@@ -968,20 +971,20 @@ class DailyWifePlugin(Star):
                             yield event.chain_result(message_elements)
                             return
                         else:
-                            print(f"Napcat API 错误 (许愿): {response_data}")
+                            logger.error(f"Napcat API 错误 (许愿): {response_data}")
                             last_error = f"{current_host}: {response_data}"
                             continue
 
             except aiohttp.ClientError as e:
-                print(f"连接 Napcat API 失败 (许愿): {e}")
+                logger.error(f"连接 Napcat API 失败 (许愿): {e}")
                 last_error = f"{current_host}: {str(e)}"
                 continue
             except asyncio.TimeoutError:
-                print(f"连接 Napcat API 超时 (许愿)")
+                logger.error(f"连接 Napcat API 超时 (许愿)")
                 last_error = f"{current_host}: 超时"
                 continue
             except Exception as e:
-                print(f"许愿异常: {traceback.format_exc()}")
+                logger.error(f"许愿异常: {traceback.format_exc()}")
                 last_error = f"{current_host}: {str(e)}"
                 continue
 
@@ -1041,8 +1044,8 @@ class DailyWifePlugin(Star):
         for attempt in range(len(self.napcat_hosts)):
             current_host = self._get_current_napcat_host()
             try:
-                print(f"🔍 强娶功能使用主机: {current_host}")
-
+                logger.info(f"🔍 强娶功能使用主机: {current_host}")
+                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
                 payload = {
                     "group_id": group_id,
                     "user_id": target_qq,
@@ -1051,13 +1054,14 @@ class DailyWifePlugin(Star):
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                             f"http://{current_host}/get_group_member_info",
+                            headers=headers,
                             json=payload,
                             timeout=self.timeout
                     ) as resp:
                         response_data = await resp.json()
 
                         if response_data.get("status") == "failed" and "不存在" in response_data.get("message", ""):
-                            print(f"❌ {current_host} 报告用户不存在，尝试下一个主机")
+                            logger.warning(f"⚠️ {current_host} 报告用户不存在，尝试下一个主机")
                             last_error = f"{current_host}: {response_data.get('message')}"
                             continue
 
@@ -1118,14 +1122,14 @@ class DailyWifePlugin(Star):
                                                 image_data = await resp.read()
                                                 image_to_send = Image.fromBytes(image_data)
                                             else:
-                                                print(
+                                                logger.error(
                                                     f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
                                 except aiohttp.ClientError as e:
-                                    print(f"下载头像网络错误: {e}")
+                                    logger.error(f"下载头像网络错误: {e}")
                                 except asyncio.TimeoutError:
-                                    print("下载头像超时")
+                                    logger.error("下载头像超时")
                                 except Exception as e:
-                                    print(f"处理下载头像异常: {traceback.format_exc()}")
+                                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
 
                                 if image_to_send:
                                     message_elements.append(image_to_send)
@@ -1135,20 +1139,20 @@ class DailyWifePlugin(Star):
                             yield event.chain_result(message_elements)
                             return
                         else:
-                            print(f"Napcat API 错误 (强娶): {response_data}")
+                            logger.error(f"Napcat API 错误 (强娶): {response_data}")
                             last_error = f"{current_host}: {response_data}"
                             continue
 
             except aiohttp.ClientError as e:
-                print(f"连接 Napcat API 失败 (强娶): {e}")
+                logger.error(f"连接 Napcat API 失败 (强娶): {e}")
                 last_error = f"{current_host}: {str(e)}"
                 continue
             except asyncio.TimeoutError:
-                print(f"连接 Napcat API 超时 (强娶)")
+                logger.error(f"连接 Napcat API 超时 (强娶)")
                 last_error = f"{current_host}: 超时"
                 continue
             except Exception as e:
-                print(f"强娶异常: {traceback.format_exc()}")
+                logger.error(f"强娶异常: {traceback.format_exc()}")
                 last_error = f"{current_host}: {str(e)}"
                 continue
 
@@ -1214,7 +1218,7 @@ class DailyWifePlugin(Star):
             if expired_keys:
                 self._save_cooling_data()
         except Exception as e:
-            print(f"清理冷静期数据失败: {traceback.format_exc()}")
+            logger.error(f"清理冷静期数据失败: {traceback.format_exc()}")
 
     def _is_in_cooling_period(self, user1: str, user2: str) -> bool:
         return any({user1, user2} == set(pair["users"]) and datetime.now() < pair["expire_time"]
@@ -1311,7 +1315,7 @@ class DailyWifePlugin(Star):
                 self._clean_invalid_cooling_records()
                 self.advanced_usage = {}
             except Exception as e:
-                print(f"定时任务失败: {traceback.format_exc()}")
+                logger.error(f"定时任务失败: {traceback.format_exc()}")
 
     # 插件被禁用、重载或关闭时触发
     async def terminate(self):
