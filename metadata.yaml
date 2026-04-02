@@ -1,6 +1,6 @@
 name: DailyWife # 这是你的插件的唯一识别名。
 desc: 随机抽群友当老婆，请先配置NapCat！！。 # 插件简短描述
 help: 输入 /老婆帮帮我 查看关键词回复帮助。 # 插件的帮助信息
-version: v1.0.2 # 插件版本号。
+version: v1.0.4 # 插件版本号。
 author: jmt059 # 作者
 repo: https://github.com/jmt059/DailyWife # 插件的仓库地址

@@ -47,7 +47,7 @@ class GroupMember:
 
 
 # --------------- 插件主类 ---------------
-@register("DailyWife", "jmt059", "每日老婆插件", "v1.0.3", "https://github.com/jmt059/DailyWife")
+@register("DailyWife", "jmt059", "每日老婆插件", "v1.0.4", "https://github.com/jmt059/DailyWife")
 class DailyWifePlugin(Star):
     # 用于跟踪等待确认开启进阶功能的用户和会话信息
     ADVANCED_ENABLE_STATES: Dict[str, Dict[str, any]] = {}
@@ -526,9 +526,11 @@ class DailyWifePlugin(Star):
         for host in self.napcat_hosts:
             try:
                 print(f"🔍 尝试从 {host} 获取群成员...")
+                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                             f"http://{host}/get_group_member_list",
+                            headers=headers,
                             json={"group_id": group_id},
                             timeout=self.timeout
                     ) as resp:
@@ -900,7 +902,7 @@ class DailyWifePlugin(Star):
             current_host = self._get_current_napcat_host()
             try:
                 print(f"🔍 许愿功能使用主机: {current_host}")
-
+                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
                 payload = {
                     "group_id": group_id,
                     "user_id": target_qq,
@@ -909,6 +911,7 @@ class DailyWifePlugin(Star):
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                             f"http://{current_host}/get_group_member_info",
+                            headers=headers,
                             json=payload,
                             timeout=self.timeout
                     ) as resp:
@@ -1042,7 +1045,7 @@ class DailyWifePlugin(Star):
             current_host = self._get_current_napcat_host()
             try:
                 print(f"🔍 强娶功能使用主机: {current_host}")
-
+                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
                 payload = {
                     "group_id": group_id,
                     "user_id": target_qq,
@@ -1051,6 +1054,7 @@ class DailyWifePlugin(Star):
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                             f"http://{current_host}/get_group_member_info",
+                            headers=headers,
                             json=payload,
                             timeout=self.timeout
                     ) as resp:
