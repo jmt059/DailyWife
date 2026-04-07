@@ -521,9 +521,28 @@ class DailyWifePlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     # --------------- 核心功能 ---------------
+    async def _fetch_avatar(self, user_id: str) -> Optional[object]:
+        """下载用户头像，返回 Image 消息段，失败返回 None。"""
+        avatar_size = self.config.get("avatar_size", 100)
+        avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={user_id}&spec={avatar_size}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(avatar_url, timeout=self.timeout) as resp:
+                    if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
+                        return Image.fromBytes(await resp.read())
+                    logger.error(
+                        f"下载头像失败，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
+        except aiohttp.ClientError as e:
+            logger.error(f"下载头像网络错误: {e}")
+        except asyncio.TimeoutError:
+            logger.error("下载头像超时")
+        except Exception:
+            logger.error(f"处理下载头像异常: {traceback.format_exc()}")
+        return None
+
     async def _get_members(self, group_id: str) -> Optional[List]:
-        # 简化版本 - 只尝试所有主机一次
-        for host in self.napcat_hosts:
+        for attempt in range(len(self.napcat_hosts)):
+            host = self._get_current_napcat_host()
             try:
                 logger.info(f"🔍 尝试从 {host} 获取群成员...")
                 headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
@@ -537,11 +556,10 @@ class DailyWifePlugin(Star):
                         data = await resp.json()
                         if "data" in data and isinstance(data["data"], list):
                             members = [GroupMember(m) for m in data["data"] if "user_id" in m]
-                            if len(members) > 0:
+                            if members:
                                 logger.info(f"✅ {host} 成功获取 {len(members)} 个成员")
                                 return members
-                            else:
-                                logger.warning(f"⚠️ {host} 返回0个成员")
+                            logger.warning(f"⚠️ {host} 返回0个成员")
                         else:
                             logger.error(f"❌ {host} 返回数据结构异常")
             except Exception as e:
@@ -586,52 +604,19 @@ class DailyWifePlugin(Star):
             # Check if the user is already in a pairing
             if user_id in group_data.get("pairs", {}):
                 try:
-                    group_id = str(event.message_obj.group_id)
-                    user_id = str(event.get_sender_id())
-                    self._check_reset(group_id)
-                    group_data = self.pair_data.get(group_id, {})
                     partner_info = group_data["pairs"][user_id]
                     formatted_info = self._format_display_info(partner_info['display_name'])
-
                     message_elements = [Plain(f"💖 您的今日伴侣：{formatted_info}\n(请好好对待TA)")]
-
-                    # 检查是否开启了显示头像
-                    if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
-                        partner_id = partner_info['user_id']
-                        avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
-                        avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                        image_to_send = None
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.get(avatar_url, timeout=10) as resp:
-                                    # 检查响应状态码和 Content-Type，确保是图片
-                                    if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                        image_data = await resp.read()
-                                        # 使用图片数据创建 Image 消息段
-                                        image_to_send = Image.fromBytes(image_data)
-                                    else:
-                                        logger.error(
-                                            f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                        except aiohttp.ClientError as e:
-                            logger.error(f"下载头像网络错误: {e}")
-                        except asyncio.TimeoutError:
-                            logger.error("下载头像超时")
-                        except Exception as e:
-                            logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                        if image_to_send:
-                            message_elements.append(image_to_send)
-                        else:
-                            message_elements.append(Plain("\n[头像获取失败]"))
-
+                    if self.config.get("show_avatar", True):
+                        img = await self._fetch_avatar(partner_info['user_id'])
+                        message_elements.append(img if img else Plain("\n[头像获取失败]"))
                     yield event.chain_result(message_elements)
                     return
-                except Exception as e:
+                except Exception:
                     logger.error(f"获取老婆发生异常: {traceback.format_exc()}")
                     yield event.plain_result("❌ 获取老婆发生异常")
 
-            members = await self._get_members(int(group_id))
+            members = await self._get_members(group_id)
             if not members:
                 yield event.plain_result("⚠️ 当前群组状态异常，请联系管理员")
                 return
@@ -672,7 +657,6 @@ class DailyWifePlugin(Star):
                 group_data["used"].append(target.user_id)
             self._save_pair_data()
 
-            sender_display = self._format_display_info(f"{event.get_sender_name()}({user_id})")
             target_display = self._format_display_info(target.display_info)
 
             message_elements = [
@@ -680,32 +664,10 @@ class DailyWifePlugin(Star):
                 Plain(f"▻ 成功娶到：{target_display}\n"),
             ]
 
-            # 检查是否开启了显示头像
-            if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
-                avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
-                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={target.user_id}&spec={avatar_size}"
+            if self.config.get("show_avatar", True):
                 message_elements.append(Plain("▻ 对方头像："))
-                image_to_send = None
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(avatar_url, timeout=10) as resp:
-                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                image_data = await resp.read()
-                                image_to_send = Image.fromBytes(image_data)
-                            else:
-                                logger.error(
-                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                except aiohttp.ClientError as e:
-                    logger.error(f"下载头像网络错误: {e}")
-                except asyncio.TimeoutError:
-                    logger.error("下载头像超时")
-                except Exception as e:
-                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                if image_to_send:
-                    message_elements.append(image_to_send)
-                else:
-                    message_elements.append(Plain("[头像获取失败]"))
+                img = await self._fetch_avatar(str(target.user_id))
+                message_elements.append(img if img else Plain("[头像获取失败]"))
 
             message_elements.extend([
                 Plain("\n💎 好好对待TA哦，\n"),
@@ -732,40 +694,12 @@ class DailyWifePlugin(Star):
             formatted_info = self._format_display_info(partner_info['display_name'])
 
             message_elements = [Plain(f"💖 您的今日伴侣：{formatted_info}\n(请好好对待TA)")]
-
-            # 检查是否开启了显示头像
-            if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
-                partner_id = partner_info['user_id']
-                avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
-                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                image_to_send = None
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(avatar_url, timeout=10) as resp:
-                            # 检查响应状态码和 Content-Type，确保是图片
-                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                image_data = await resp.read()
-                                # 使用图片数据创建 Image 消息段
-                                image_to_send = Image.fromBytes(image_data)
-                            else:
-                                logger.error(
-                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                except aiohttp.ClientError as e:
-                    logger.error(f"下载头像网络错误: {e}")
-                except asyncio.TimeoutError:
-                    logger.error("下载头像超时")
-                except Exception as e:
-                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                if image_to_send:
-                    message_elements.append(image_to_send)
-                else:
-                    message_elements.append(Plain("\n[头像获取失败]"))
-
+            if self.config.get("show_avatar", True):
+                img = await self._fetch_avatar(partner_info['user_id'])
+                message_elements.append(img if img else Plain("\n[头像获取失败]"))
             yield event.chain_result(message_elements)
 
-        except Exception as e:
+        except Exception:
             logger.error(f"查询异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 查询过程发生异常")
 
@@ -940,33 +874,9 @@ class DailyWifePlugin(Star):
                             message_elements = [
                                 Plain(f"💖 许愿成功,系统已为您指定：{formatted_info}作为伴侣\n(请好好对待TA)")]
 
-                            # 检查是否开启了显示头像
                             if self.config.get("show_avatar", True):
-                                partner_id = partner_info['user_id']
-                                avatar_size = self.config.get("avatar_size", 100)
-                                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                                image_to_send = None
-                                try:
-                                    async with aiohttp.ClientSession() as session:
-                                        async with session.get(avatar_url, timeout=10) as resp:
-                                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                                image_data = await resp.read()
-                                                image_to_send = Image.fromBytes(image_data)
-                                            else:
-                                                logger.error(
-                                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                                except aiohttp.ClientError as e:
-                                    logger.error(f"下载头像网络错误: {e}")
-                                except asyncio.TimeoutError:
-                                    logger.error("下载头像超时")
-                                except Exception as e:
-                                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                                if image_to_send:
-                                    message_elements.append(image_to_send)
-                                else:
-                                    message_elements.append(Plain("\n[头像获取失败]"))
+                                img = await self._fetch_avatar(partner_info['user_id'])
+                                message_elements.append(img if img else Plain("\n[头像获取失败]"))
 
                             yield event.chain_result(message_elements)
                             return
@@ -1108,33 +1018,9 @@ class DailyWifePlugin(Star):
                             message_elements = [
                                 Plain(f"🐮 强娶成功,系统已为您牛走了：{original_partner_name}的{formatted_info}作为伴侣")]
 
-                            # 检查是否开启了显示头像
                             if self.config.get("show_avatar", True):
-                                partner_id = partner_info['user_id']
-                                avatar_size = self.config.get("avatar_size", 100)
-                                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                                image_to_send = None
-                                try:
-                                    async with aiohttp.ClientSession() as session:
-                                        async with session.get(avatar_url, timeout=10) as resp:
-                                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                                image_data = await resp.read()
-                                                image_to_send = Image.fromBytes(image_data)
-                                            else:
-                                                logger.error(
-                                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                                except aiohttp.ClientError as e:
-                                    logger.error(f"下载头像网络错误: {e}")
-                                except asyncio.TimeoutError:
-                                    logger.error("下载头像超时")
-                                except Exception as e:
-                                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                                if image_to_send:
-                                    message_elements.append(image_to_send)
-                                else:
-                                    message_elements.append(Plain("\n[头像获取失败]"))
+                                img = await self._fetch_avatar(partner_info['user_id'])
+                                message_elements.append(img if img else Plain("\n[头像获取失败]"))
 
                             yield event.chain_result(message_elements)
                             return
