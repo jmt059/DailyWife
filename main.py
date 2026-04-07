@@ -108,7 +108,7 @@ class DailyWifePlugin(Star):
                             }
                     self.pair_data[group_id]["pairs"] = new_pairs
                     self._save_pair_data()
-        except Exception as e:
+        except Exception:
             logger.error(f"数据迁移失败: {traceback.format_exc()}")
 
     # --------------- 初始化方法 ---------------
@@ -148,7 +148,7 @@ class DailyWifePlugin(Star):
                 with open(PAIR_DATA_PATH, "r", encoding="utf-8") as f:
                     return json.load(f)
             return {}
-        except Exception as e:
+        except Exception:
             logger.error(f"配对数据加载失败: {traceback.format_exc()}")
             return {}
 
@@ -160,7 +160,7 @@ class DailyWifePlugin(Star):
                     return {k: {"users": v["users"], "expire_time": datetime.fromisoformat(v["expire_time"])}
                             for k, v in data.items()}
             return {}
-        except Exception as e:
+        except Exception:
             logger.error(f"冷静期数据加载失败: {traceback.format_exc()}")
             return {}
 
@@ -191,7 +191,7 @@ class DailyWifePlugin(Star):
                             })
                     return cleaned
             return {}
-        except Exception as e:
+        except Exception:
             logger.error(f"手动黑名单加载失败: {traceback.format_exc()}")
             return {}
 
@@ -204,7 +204,7 @@ class DailyWifePlugin(Star):
         except json.JSONDecodeError:
             logger.error(f"JSON 文件 {path} 解码错误，已返回默认值。")
             return default
-        except Exception as e:
+        except Exception:
             logger.error(f"加载数据文件 {path} 失败: {traceback.format_exc()}")
             return default
 
@@ -216,7 +216,7 @@ class DailyWifePlugin(Star):
             with open(temp_path, 'w', encoding='utf-8') as f:
                 json.dump(self.pair_data, f, ensure_ascii=False, indent=2)
             temp_path.replace(PAIR_DATA_PATH)
-        except Exception as e:
+        except Exception:
             logger.error(f"保存配对数据失败: {traceback.format_exc()}")
             raise
 
@@ -232,7 +232,7 @@ class DailyWifePlugin(Star):
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(self.manual_blacklist, f, ensure_ascii=False, indent=2)
             temp_path.replace(USER_MANUAL_BLOCKED_PATH)
-        except Exception as e:
+        except Exception:
             logger.error(f"保存手动黑名单失败: {traceback.format_exc()}")
 
     def _save_data(self, path: Path, data: dict):
@@ -242,7 +242,7 @@ class DailyWifePlugin(Star):
             with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             temp_path.replace(path)
-        except Exception as e:
+        except Exception:
             logger.error(f"数据保存失败: {traceback.format_exc()}")
 
     def _load_breakup_counts(self) -> Dict[str, Dict[str, int]]:
@@ -252,7 +252,7 @@ class DailyWifePlugin(Star):
                     data = json.load(f)
                     return {date: {k: int(v) for k, v in counts.items()} for date, counts in data.items()}
             return {}
-        except Exception as e:
+        except Exception:
             logger.error(f"分手次数数据加载失败: {traceback.format_exc()}")
             return {}
 
@@ -521,27 +521,77 @@ class DailyWifePlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     # --------------- 核心功能 ---------------
+    async def _fetch_avatar(self, user_id: str) -> Optional[Image]:
+        """下载用户头像，返回 Image 消息段，失败返回 None。"""
+        avatar_size = self.config.get("avatar_size", 100)
+        avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={user_id}&spec={avatar_size}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(avatar_url, timeout=self.timeout) as resp:
+                    if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
+                        return Image.fromBytes(await resp.read())
+                    logger.error(f"下载头像失败，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
+        except aiohttp.ClientError as e:
+            logger.error(f"下载头像网络错误: {e}")
+        except asyncio.TimeoutError:
+            logger.error("下载头像超时")
+        except Exception:
+            logger.error(f"处理下载头像异常: {traceback.format_exc()}")
+        return None
+
+    async def _get_member_info(self, group_id: str, target_qq: str) -> Tuple[Optional[dict], Optional[str]]:
+        """通过 NapCat API 获取群成员信息（多主机容错）。返回 (data_dict, last_error)。"""
+        last_error = None
+        for _ in range(len(self.napcat_hosts)):
+            host = self._get_current_napcat_host()
+            try:
+                logger.info(f"🔍 获取成员信息使用主机: {host}")
+                headers = {"Authorization": f"Bearer {self.config.get('napcat_token', '')}"}
+                payload = {"group_id": group_id, "user_id": target_qq, "no_cache": False}
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                            f"http://{host}/get_group_member_info",
+                            headers=headers, json=payload, timeout=self.timeout
+                    ) as resp:
+                        response_data = await resp.json()
+                        if response_data.get("status") == "failed" and "不存在" in response_data.get("message", ""):
+                            logger.warning(f"⚠️ {host} 报告用户不存在，尝试下一个主机")
+                            last_error = f"{host}: {response_data.get('message')}"
+                            continue
+                        if response_data.get("status") == "ok" and "data" in response_data:
+                            return response_data["data"], None
+                        logger.error(f"Napcat API 错误: {response_data}")
+                        last_error = f"{host}: {response_data}"
+                        continue
+            except aiohttp.ClientError as e:
+                logger.error(f"连接 Napcat API 失败: {e}")
+                last_error = f"{host}: {e}"
+            except asyncio.TimeoutError:
+                logger.error(f"连接 Napcat API 超时: {host}")
+                last_error = f"{host}: 超时"
+            except Exception:
+                logger.error(f"获取成员信息异常: {traceback.format_exc()}")
+                last_error = f"{host}: 异常"
+        return None, last_error
+
     async def _get_members(self, group_id: str) -> Optional[List]:
-        # 简化版本 - 只尝试所有主机一次
-        for host in self.napcat_hosts:
+        for _ in range(len(self.napcat_hosts)):
+            host = self._get_current_napcat_host()
             try:
                 logger.info(f"🔍 尝试从 {host} 获取群成员...")
-                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
+                headers = {"Authorization": f"Bearer {self.config.get('napcat_token', '')}"}
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                             f"http://{host}/get_group_member_list",
-                            headers=headers,
-                            json={"group_id": group_id},
-                            timeout=self.timeout
+                            headers=headers, json={"group_id": group_id}, timeout=self.timeout
                     ) as resp:
                         data = await resp.json()
                         if "data" in data and isinstance(data["data"], list):
                             members = [GroupMember(m) for m in data["data"] if "user_id" in m]
-                            if len(members) > 0:
+                            if members:
                                 logger.info(f"✅ {host} 成功获取 {len(members)} 个成员")
                                 return members
-                            else:
-                                logger.warning(f"⚠️ {host} 返回0个成员")
+                            logger.warning(f"⚠️ {host} 返回0个成员")
                         else:
                             logger.error(f"❌ {host} 返回数据结构异常")
             except Exception as e:
@@ -556,7 +606,7 @@ class DailyWifePlugin(Star):
             if group_id not in self.pair_data or self.pair_data[group_id].get("date") != today:
                 self.pair_data[group_id] = {"date": today, "pairs": {}, "used": []}
                 self._save_pair_data()
-        except Exception as e:
+        except Exception:
             logger.error(f"重置检查失败: {traceback.format_exc()}")
 
     def _is_advanced_enabled(self, group_id: str) -> bool:
@@ -586,52 +636,19 @@ class DailyWifePlugin(Star):
             # Check if the user is already in a pairing
             if user_id in group_data.get("pairs", {}):
                 try:
-                    group_id = str(event.message_obj.group_id)
-                    user_id = str(event.get_sender_id())
-                    self._check_reset(group_id)
-                    group_data = self.pair_data.get(group_id, {})
                     partner_info = group_data["pairs"][user_id]
                     formatted_info = self._format_display_info(partner_info['display_name'])
-
                     message_elements = [Plain(f"💖 您的今日伴侣：{formatted_info}\n(请好好对待TA)")]
-
-                    # 检查是否开启了显示头像
-                    if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
-                        partner_id = partner_info['user_id']
-                        avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
-                        avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                        image_to_send = None
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                async with session.get(avatar_url, timeout=10) as resp:
-                                    # 检查响应状态码和 Content-Type，确保是图片
-                                    if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                        image_data = await resp.read()
-                                        # 使用图片数据创建 Image 消息段
-                                        image_to_send = Image.fromBytes(image_data)
-                                    else:
-                                        logger.error(
-                                            f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                        except aiohttp.ClientError as e:
-                            logger.error(f"下载头像网络错误: {e}")
-                        except asyncio.TimeoutError:
-                            logger.error("下载头像超时")
-                        except Exception as e:
-                            logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                        if image_to_send:
-                            message_elements.append(image_to_send)
-                        else:
-                            message_elements.append(Plain("\n[头像获取失败]"))
-
+                    if self.config.get("show_avatar", True):
+                        img = await self._fetch_avatar(partner_info['user_id'])
+                        message_elements.append(img if img else Plain("\n[头像获取失败]"))
                     yield event.chain_result(message_elements)
                     return
-                except Exception as e:
+                except Exception:
                     logger.error(f"获取老婆发生异常: {traceback.format_exc()}")
                     yield event.plain_result("❌ 获取老婆发生异常")
 
-            members = await self._get_members(int(group_id))
+            members = await self._get_members(group_id)
             if not members:
                 yield event.plain_result("⚠️ 当前群组状态异常，请联系管理员")
                 return
@@ -672,7 +689,6 @@ class DailyWifePlugin(Star):
                 group_data["used"].append(target.user_id)
             self._save_pair_data()
 
-            sender_display = self._format_display_info(f"{event.get_sender_name()}({user_id})")
             target_display = self._format_display_info(target.display_info)
 
             message_elements = [
@@ -680,32 +696,10 @@ class DailyWifePlugin(Star):
                 Plain(f"▻ 成功娶到：{target_display}\n"),
             ]
 
-            # 检查是否开启了显示头像
-            if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
-                avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
-                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={target.user_id}&spec={avatar_size}"
+            if self.config.get("show_avatar", True):
                 message_elements.append(Plain("▻ 对方头像："))
-                image_to_send = None
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(avatar_url, timeout=10) as resp:
-                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                image_data = await resp.read()
-                                image_to_send = Image.fromBytes(image_data)
-                            else:
-                                logger.error(
-                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                except aiohttp.ClientError as e:
-                    logger.error(f"下载头像网络错误: {e}")
-                except asyncio.TimeoutError:
-                    logger.error("下载头像超时")
-                except Exception as e:
-                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                if image_to_send:
-                    message_elements.append(image_to_send)
-                else:
-                    message_elements.append(Plain("[头像获取失败]"))
+                img = await self._fetch_avatar(str(target.user_id))
+                message_elements.append(img if img else Plain("[头像获取失败]"))
 
             message_elements.extend([
                 Plain("\n💎 好好对待TA哦，\n"),
@@ -714,7 +708,7 @@ class DailyWifePlugin(Star):
 
             yield event.chain_result(message_elements)
 
-        except Exception as e:
+        except Exception:
             logger.error(f"配对异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 配对过程发生严重异常，请联系开发者")
 
@@ -732,40 +726,12 @@ class DailyWifePlugin(Star):
             formatted_info = self._format_display_info(partner_info['display_name'])
 
             message_elements = [Plain(f"💖 您的今日伴侣：{formatted_info}\n(请好好对待TA)")]
-
-            # 检查是否开启了显示头像
-            if self.config.get("show_avatar", True):  # 从配置中获取 show_avatar 状态，默认为 True
-                partner_id = partner_info['user_id']
-                avatar_size = self.config.get("avatar_size", 100)  # 从配置中获取头像尺寸，默认为 100
-                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                image_to_send = None
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(avatar_url, timeout=10) as resp:
-                            # 检查响应状态码和 Content-Type，确保是图片
-                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                image_data = await resp.read()
-                                # 使用图片数据创建 Image 消息段
-                                image_to_send = Image.fromBytes(image_data)
-                            else:
-                                logger.error(
-                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                except aiohttp.ClientError as e:
-                    logger.error(f"下载头像网络错误: {e}")
-                except asyncio.TimeoutError:
-                    logger.error("下载头像超时")
-                except Exception as e:
-                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                if image_to_send:
-                    message_elements.append(image_to_send)
-                else:
-                    message_elements.append(Plain("\n[头像获取失败]"))
-
+            if self.config.get("show_avatar", True):
+                img = await self._fetch_avatar(partner_info['user_id'])
+                message_elements.append(img if img else Plain("\n[头像获取失败]"))
             yield event.chain_result(message_elements)
 
-        except Exception as e:
+        except Exception:
             logger.error(f"查询异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 查询过程发生异常")
 
@@ -811,7 +777,7 @@ class DailyWifePlugin(Star):
             user_counts[user_id] = current_count + 1
             self.breakup_counts[today] = user_counts
             self._save_data(BREAKUP_COUNT_PATH, self.breakup_counts)
-        except Exception as e:
+        except Exception:
             logger.error(f"分手异常: {traceback.format_exc()}")
             yield event.plain_result("❌ 分手操作异常")
 
@@ -896,100 +862,29 @@ class DailyWifePlugin(Star):
             yield event.plain_result("❌ 许愿失败：目标在黑名单或被对方拒绝，无法许愿到该用户。")
             return
 
-        # 多端口尝试（原逻辑）
-        last_error = None
-        for attempt in range(len(self.napcat_hosts)):
-            current_host = self._get_current_napcat_host()
-            try:
-                logger.info(f"🔍 许愿功能使用主机: {current_host}")
-                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
-                payload = {
-                    "group_id": group_id,
-                    "user_id": target_qq,
-                    "no_cache": False
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                            f"http://{current_host}/get_group_member_info",
-                            headers=headers,
-                            json=payload,
-                            timeout=self.timeout
-                    ) as resp:
-                        response_data = await resp.json()
+        member_data, last_error = await self._get_member_info(group_id, target_qq)
+        if not member_data:
+            yield event.plain_result(f"❌ 许愿失败：所有Napcat主机都无法找到该用户\n最后错误: {last_error}")
+            return
 
-                        if response_data.get("status") == "failed" and "不存在" in response_data.get("message", ""):
-                            logger.warning(f"⚠️ {current_host} 报告用户不存在，尝试下一个主机")
-                            last_error = f"{current_host}: {response_data.get('message')}"
-                            continue
+        target_nickname = member_data.get("nickname", f"未知用户({target_qq})")
+        sender_nickname = event.get_sender_name()
+        group_data["pairs"][user_id] = {"user_id": target_qq, "display_name": f"{target_nickname}({target_qq})"}
+        group_data["pairs"][target_qq] = {"user_id": user_id, "display_name": f"{sender_nickname}({user_id})"}
+        if user_id not in group_data["used"]:
+            group_data["used"].append(user_id)
+        if target_qq not in group_data["used"]:
+            group_data["used"].append(target_qq)
+        self._save_pair_data()
 
-                        elif response_data.get("status") == "ok" and "data" in response_data:
-                            target_nickname = response_data["data"].get("nickname", f"未知用户({target_qq})")
-                            sender_nickname = event.get_sender_name()
-                            group_data["pairs"][user_id] = {"user_id": target_qq,
-                                                            "display_name": f"{target_nickname}({target_qq})"}
-                            group_data["pairs"][target_qq] = {"user_id": user_id,
-                                                              "display_name": f"{sender_nickname}({user_id})"}
-                            if user_id not in group_data["used"]:
-                                group_data["used"].append(user_id)
-                            if target_qq not in group_data["used"]:
-                                group_data["used"].append(target_qq)
-                            self._save_pair_data()
-                            partner_info = group_data["pairs"][user_id]
-                            formatted_info = self._format_display_info(partner_info['display_name'])
-                            self.advanced_usage[group_id][user_id]["wish"] += 1
-                            message_elements = [
-                                Plain(f"💖 许愿成功,系统已为您指定：{formatted_info}作为伴侣\n(请好好对待TA)")]
-
-                            # 检查是否开启了显示头像
-                            if self.config.get("show_avatar", True):
-                                partner_id = partner_info['user_id']
-                                avatar_size = self.config.get("avatar_size", 100)
-                                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                                image_to_send = None
-                                try:
-                                    async with aiohttp.ClientSession() as session:
-                                        async with session.get(avatar_url, timeout=10) as resp:
-                                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                                image_data = await resp.read()
-                                                image_to_send = Image.fromBytes(image_data)
-                                            else:
-                                                logger.error(
-                                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                                except aiohttp.ClientError as e:
-                                    logger.error(f"下载头像网络错误: {e}")
-                                except asyncio.TimeoutError:
-                                    logger.error("下载头像超时")
-                                except Exception as e:
-                                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                                if image_to_send:
-                                    message_elements.append(image_to_send)
-                                else:
-                                    message_elements.append(Plain("\n[头像获取失败]"))
-
-                            yield event.chain_result(message_elements)
-                            return
-                        else:
-                            logger.error(f"Napcat API 错误 (许愿): {response_data}")
-                            last_error = f"{current_host}: {response_data}"
-                            continue
-
-            except aiohttp.ClientError as e:
-                logger.error(f"连接 Napcat API 失败 (许愿): {e}")
-                last_error = f"{current_host}: {str(e)}"
-                continue
-            except asyncio.TimeoutError:
-                logger.error(f"连接 Napcat API 超时 (许愿)")
-                last_error = f"{current_host}: 超时"
-                continue
-            except Exception as e:
-                logger.error(f"许愿异常: {traceback.format_exc()}")
-                last_error = f"{current_host}: {str(e)}"
-                continue
-
-        # 所有主机都尝试失败
-        yield event.plain_result(f"❌ 许愿失败：所有Napcat主机都无法找到该用户\n最后错误: {last_error}")
+        partner_info = group_data["pairs"][user_id]
+        formatted_info = self._format_display_info(partner_info['display_name'])
+        self.advanced_usage[group_id][user_id]["wish"] += 1
+        message_elements = [Plain(f"💖 许愿成功,系统已为您指定：{formatted_info}作为伴侣\n(请好好对待TA)")]
+        if self.config.get("show_avatar", True):
+            img = await self._fetch_avatar(partner_info['user_id'])
+            message_elements.append(img if img else Plain("\n[头像获取失败]"))
+        yield event.chain_result(message_elements)
 
     @filter.command("强娶")
     async def rob_command(self, event: AiocqhttpMessageEvent, input_id: int | None = None):
@@ -1039,125 +934,53 @@ class DailyWifePlugin(Star):
             yield event.plain_result("❌ 你已经有伴侣了……强娶将不可用")
             return
 
-        # 多端口尝试
-        last_error = None
-        for attempt in range(len(self.napcat_hosts)):
-            current_host = self._get_current_napcat_host()
-            try:
-                logger.info(f"🔍 强娶功能使用主机: {current_host}")
-                headers = {"Authorization": "Bearer " + self.config.get("napcat_token", "")}
-                payload = {
-                    "group_id": group_id,
-                    "user_id": target_qq,
-                    "no_cache": False
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                            f"http://{current_host}/get_group_member_info",
-                            headers=headers,
-                            json=payload,
-                            timeout=self.timeout
-                    ) as resp:
-                        response_data = await resp.json()
+        member_data, last_error = await self._get_member_info(group_id, target_qq)
+        if not member_data:
+            yield event.plain_result(f"❌ 强娶失败：所有Napcat主机都无法找到该用户\n最后错误: {last_error}")
+            return
 
-                        if response_data.get("status") == "failed" and "不存在" in response_data.get("message", ""):
-                            logger.warning(f"⚠️ {current_host} 报告用户不存在，尝试下一个主机")
-                            last_error = f"{current_host}: {response_data.get('message')}"
-                            continue
+        target_nickname = member_data.get("nickname", f"未知用户({target_qq})")
+        if target_qq not in group_data["pairs"]:
+            yield event.plain_result("❌ 强娶失败：目标当前没有伴侣，请改用许愿命令。")
+            return
+        target_pair = group_data["pairs"][target_qq]
+        if target_pair.get("locked", False):
+            yield event.plain_result("❌ 强娶失败：目标伴侣处于锁定状态。")
+            return
+        partner_id = target_pair["user_id"]
+        partner_pair = group_data["pairs"].get(partner_id, {})
+        if partner_pair.get("locked", False):
+            yield event.plain_result("❌ 强娶失败：目标伴侣处于锁定状态。")
+            return
 
-                        elif response_data.get("status") == "ok" and "data" in response_data:
-                            target_nickname = response_data["data"].get("nickname", f"未知用户({target_qq})")
-                            if target_qq not in group_data["pairs"]:
-                                yield event.plain_result("❌ 强娶失败：目标当前没有伴侣，请改用许愿命令。")
-                                return
-                            target_pair = group_data["pairs"][target_qq]
-                            if target_pair.get("locked", False):
-                                yield event.plain_result("❌ 强娶失败：目标伴侣处于锁定状态。")
-                                return
-                            partner_id = target_pair["user_id"]
-                            partner_pair = group_data["pairs"].get(partner_id, {})
-                            if partner_pair.get("locked", False):
-                                yield event.plain_result("❌ 强娶失败：目标伴侣处于锁定状态。")
-                                return
+        # 删除被抢夺者及其原配偶的双向记录
+        original_partner_name = "原配"
+        if target_qq in group_data["pairs"]:
+            original_partner_id = group_data["pairs"][target_qq]["user_id"]
+            original_partner_info = group_data["pairs"][target_qq]
+            original_partner_name = self._format_display_info(original_partner_info['display_name'])
+            del group_data["pairs"][target_qq]
+            if original_partner_id in group_data["pairs"] and \
+                    group_data["pairs"][original_partner_id]["user_id"] == target_qq:
+                del group_data["pairs"][original_partner_id]
 
-                            # 删除被抢夺者及其原配偶的双向记录
-                            original_partner_name = "原配"
-                            if target_qq in group_data["pairs"]:
-                                original_partner_id = group_data["pairs"][target_qq]["user_id"]
-                                original_partner_info = group_data["pairs"][target_qq]
-                                original_partner_name = self._format_display_info(original_partner_info['display_name'])
-                                del group_data["pairs"][target_qq]
-                                if original_partner_id in group_data["pairs"] and \
-                                        group_data["pairs"][original_partner_id]["user_id"] == target_qq:
-                                    del group_data["pairs"][original_partner_id]
+        sender_nickname = event.get_sender_name()
+        group_data["pairs"][user_id] = {"user_id": target_qq, "display_name": f"{target_nickname}({target_qq})"}
+        group_data["pairs"][target_qq] = {"user_id": user_id, "display_name": f"{sender_nickname}({user_id})"}
+        if user_id not in group_data["used"]:
+            group_data["used"].append(user_id)
+        if target_qq not in group_data["used"]:
+            group_data["used"].append(target_qq)
+        self._save_pair_data()
+        self.advanced_usage[group_id][user_id]["rob"] += 1
 
-                            sender_nickname = event.get_sender_name()
-                            group_data["pairs"][user_id] = {"user_id": target_qq,
-                                                            "display_name": f"{target_nickname}({target_qq})"}
-                            group_data["pairs"][target_qq] = {"user_id": user_id,
-                                                              "display_name": f"{sender_nickname}({user_id})"}
-                            if user_id not in group_data["used"]:
-                                group_data["used"].append(user_id)
-                            if target_qq not in group_data["used"]:
-                                group_data["used"].append(target_qq)
-                            self._save_pair_data()
-                            self.advanced_usage[group_id][user_id]["rob"] += 1
-                            partner_info = group_data["pairs"][user_id]
-                            formatted_info = self._format_display_info(partner_info['display_name'])
-
-                            message_elements = [
-                                Plain(f"🐮 强娶成功,系统已为您牛走了：{original_partner_name}的{formatted_info}作为伴侣")]
-
-                            # 检查是否开启了显示头像
-                            if self.config.get("show_avatar", True):
-                                partner_id = partner_info['user_id']
-                                avatar_size = self.config.get("avatar_size", 100)
-                                avatar_url = f"http://q.qlogo.cn/headimg_dl?dst_uin={partner_id}&spec={avatar_size}"
-
-                                image_to_send = None
-                                try:
-                                    async with aiohttp.ClientSession() as session:
-                                        async with session.get(avatar_url, timeout=10) as resp:
-                                            if resp.status == 200 and 'image' in resp.headers.get('Content-Type', ''):
-                                                image_data = await resp.read()
-                                                image_to_send = Image.fromBytes(image_data)
-                                            else:
-                                                logger.error(
-                                                    f"下载头像失败或获取到非图片内容，状态码: {resp.status}, Content-Type: {resp.headers.get('Content-Type')}")
-                                except aiohttp.ClientError as e:
-                                    logger.error(f"下载头像网络错误: {e}")
-                                except asyncio.TimeoutError:
-                                    logger.error("下载头像超时")
-                                except Exception as e:
-                                    logger.error(f"处理下载头像异常: {traceback.format_exc()}")
-
-                                if image_to_send:
-                                    message_elements.append(image_to_send)
-                                else:
-                                    message_elements.append(Plain("\n[头像获取失败]"))
-
-                            yield event.chain_result(message_elements)
-                            return
-                        else:
-                            logger.error(f"Napcat API 错误 (强娶): {response_data}")
-                            last_error = f"{current_host}: {response_data}"
-                            continue
-
-            except aiohttp.ClientError as e:
-                logger.error(f"连接 Napcat API 失败 (强娶): {e}")
-                last_error = f"{current_host}: {str(e)}"
-                continue
-            except asyncio.TimeoutError:
-                logger.error(f"连接 Napcat API 超时 (强娶)")
-                last_error = f"{current_host}: 超时"
-                continue
-            except Exception as e:
-                logger.error(f"强娶异常: {traceback.format_exc()}")
-                last_error = f"{current_host}: {str(e)}"
-                continue
-
-        # 所有主机都尝试失败
-        yield event.plain_result(f"❌ 强娶失败：所有Napcat主机都无法找到该用户\n最后错误: {last_error}")
+        partner_info = group_data["pairs"][user_id]
+        formatted_info = self._format_display_info(partner_info['display_name'])
+        message_elements = [Plain(f"🐮 强娶成功,系统已为您牛走了：{original_partner_name}的{formatted_info}作为伴侣")]
+        if self.config.get("show_avatar", True):
+            img = await self._fetch_avatar(partner_info['user_id'])
+            message_elements.append(img if img else Plain("\n[头像获取失败]"))
+        yield event.chain_result(message_elements)
 
     @filter.command("锁定")
     async def lock_command(self, event: AstrMessageEvent):
@@ -1217,7 +1040,7 @@ class DailyWifePlugin(Star):
                 del self.cooling_data[k]
             if expired_keys:
                 self._save_cooling_data()
-        except Exception as e:
+        except Exception:
             logger.error(f"清理冷静期数据失败: {traceback.format_exc()}")
 
     def _is_in_cooling_period(self, user1: str, user2: str) -> bool:
@@ -1249,50 +1072,35 @@ class DailyWifePlugin(Star):
             f"▸ 每日锁定次数：{self.config.get('max_daily_lock', 1)}"
         )
         # 根据是否启用进阶功能构造菜单：
-        if not adv_enabled:
-            if is_admin:
-                admin_menu = (
-                    "⚙️ 管理员命令：\n"
-                    "/重置 -a → 全部数据\n"
-                    "/重置 [群号] → 指定群配对数据\n"
-                    "/重置 -p → 配对数据\n"
-                    "/重置 -c → 冷静期数据\n"
-                    "/重置 -b → 手动黑名单\n"
-                    "/重置 -d → 分手记录\n"
-                    "/重置 -e → 进阶功能状态重置\n"
-                    "/查看黑名单 [QQ号(可选，管理员可查看其他人)]\n"
-                    "/添加黑名单 [QQ号] [all/群号] [双向/单向]\n"
-                    "/删除黑名单 [QQ号] [all/群号(可选)]\n"
-                    "/开启老婆插件进阶功能\n\n"
-                )
-            else:
-                admin_menu = ""
-            menu_text = base_menu + admin_menu + config_menu
-        else:
-            adv_menu = (
+        sections = [base_menu]
+
+        if adv_enabled:
+            sections.append(
                 "⚠️ 进阶命令(带唤醒前缀! QQ号前带空格!)：\n"
                 "/许愿 [QQ号] - 每日限1次（指定伴侣）\n"
                 "/强娶 [QQ号] - 每日限2次（抢夺他人伴侣）\n"
                 "/锁定 - 每日限1次（被抽方锁定伴侣，防止强娶）\n\n"
             )
-            if is_admin:
-                admin_menu = (
-                    "⚙️ 管理员命令：\n"
-                    "/重置 -a → 全部数据\n"
-                    "/重置 [群号] → 指定群配对数据\n"
-                    "/重置 -p → 配对数据\n"
-                    "/重置 -c → 冷静期数据\n"
-                    "/重置 -b → 手动黑名单\n"
-                    "/重置 -d → 分手记录\n"
-                    "/重置 -e → 进阶功能状态重置\n"
-                    "/查看黑名单 [QQ号(可选，管理员可查看其他人)]\n"
-                    "/添加黑名单 [QQ号] [all/群号] [双向/单向]\n"
-                    "/删除黑名单 [QQ号] [all/群号(可选)]\n"
-                    "/关闭进阶老婆插件功能\n\n"
-                )
-                menu_text = base_menu + adv_menu + admin_menu + config_menu
-            else:
-                menu_text = base_menu + adv_menu + config_menu
+
+        if is_admin:
+            toggle_cmd = "/关闭进阶老婆插件功能" if adv_enabled else "/开启老婆插件进阶功能"
+            sections.append(
+                "⚙️ 管理员命令：\n"
+                "/重置 -a → 全部数据\n"
+                "/重置 [群号] → 指定群配对数据\n"
+                "/重置 -p → 配对数据\n"
+                "/重置 -c → 冷静期数据\n"
+                "/重置 -b → 手动黑名单\n"
+                "/重置 -d → 分手记录\n"
+                "/重置 -e → 进阶功能状态重置\n"
+                "/查看黑名单 [QQ号(可选，管理员可查看其他人)]\n"
+                "/添加黑名单 [QQ号] [all/群号] [双向/单向]\n"
+                "/删除黑名单 [QQ号] [all/群号(可选)]\n"
+                f"{toggle_cmd}\n\n"
+            )
+
+        sections.append(config_menu)
+        menu_text = "".join(sections)
         yield event.chain_result([Plain(menu_text.strip())])
 
     # --------------- 定时任务 ---------------
@@ -1314,7 +1122,7 @@ class DailyWifePlugin(Star):
                 self._save_cooling_data()
                 self._clean_invalid_cooling_records()
                 self.advanced_usage = {}
-            except Exception as e:
+            except Exception:
                 logger.error(f"定时任务失败: {traceback.format_exc()}")
 
     # 插件被禁用、重载或关闭时触发
